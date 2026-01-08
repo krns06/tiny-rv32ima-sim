@@ -13,6 +13,10 @@ impl Memory {
         }
     }
 
+    pub fn init(&mut self) {
+        self.array.fill(0);
+    }
+
     #[inline]
     pub fn raw_read<const SIZE: usize>(&self, address: usize) -> [u8; SIZE] {
         let mut buf = [0; SIZE];

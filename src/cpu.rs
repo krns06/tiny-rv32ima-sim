@@ -23,7 +23,7 @@ pub struct Registers {
 impl Display for Registers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (idx, reg) in self.regs.iter().enumerate() {
-            f.write_str(&format!("[{:02}]: 0x{:08x}", idx, reg))?;
+            f.write_str(&format!("[{:02}]: 0x{:08x}\n", idx, reg))?;
         }
 
         Ok(())
@@ -31,6 +31,10 @@ impl Display for Registers {
 }
 
 impl Registers {
+    pub fn init(&mut self) {
+        self.regs.fill(0);
+    }
+
     #[inline]
     pub fn read(&self, reg: u32) -> u32 {
         let reg = reg as usize;
@@ -68,30 +72,30 @@ pub struct Cpu {
 
 impl Display for Cpu {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("---------- DUMP ----------")?;
+        f.write_str("---------- DUMP ----------\n")?;
 
-        f.write_str(&format!("PC  : 0x{:08x}", self.pc))?;
-        f.write_str(&format!("Priv: {:?}", self.prv))?;
-        f.write_str(&format!("{}", self.regs))?;
+        f.write_str(&format!("PC  : 0x{:08x}\n", self.pc))?;
+        f.write_str(&format!("Priv: {:?}\n", self.prv))?;
+        f.write_str(&format!("{}\n", self.regs))?;
 
         let opcode = self.inst & 0x7f;
         let rd = (self.inst >> 7) & 0x1f;
         let rs1 = (self.inst >> 15) & 0x1f;
         let rs2 = (self.inst >> 20) & 0x1f;
         let funct3 = (self.inst >> 12) & 0x7;
-        f.write_str(&format!("inst: 0x{:08x}", self.inst))?;
+        f.write_str(&format!("inst: 0x{:08x}\n", self.inst))?;
         f.write_str(&format!(
-            "opcode: 0b{:07b} funct3: 0b{:03b}",
+            "opcode: 0b{:07b} funct3: 0b{:03b}\n",
             opcode, funct3
         ))?;
         f.write_str(&format!(
-            "rd: 0b{:05b} rs1: 0b{:05b} rs2: 0b{:05b}",
+            "rd: 0b{:05b} rs1: 0b{:05b} rs2: 0b{:05b}\n",
             rd, rs1, rs2
         ))?;
 
-        f.write_str(&format!("{:x?}", self.csr))?;
+        f.write_str(&format!("{:x?}\n", self.csr))?;
 
-        f.write_str("---------- DUMP END ----------")
+        f.write_str("---------- DUMP END ----------\n")
     }
 }
 
@@ -108,6 +112,19 @@ impl Cpu {
             riscv_tests_exit_memory_address: 0,
             riscv_tests_finished: false,
         }
+    }
+
+    pub fn init(&mut self) {
+        self.prv = Priv::Machine;
+        self.pc = 0;
+        self.inst = 0;
+        self.csr = Csr::default();
+        self.is_debug = false;
+        self.riscv_tests_exit_memory_address = 0;
+        self.riscv_tests_finished = false;
+
+        self.regs.init();
+        self.memory.init();
     }
 
     fn read_reg(&self, reg: u32) -> u32 {
@@ -161,7 +178,6 @@ impl Cpu {
                 break;
             }
 
-            println!("[info]: PC 0x{:08x}", self.pc);
             match self.step() {
                 Err(e) => self.handle_exception(e),
                 Ok(is_jump) => {
@@ -366,6 +382,7 @@ impl Cpu {
 
                             self.prv = mpp.into();
                             self.pc = self.csr.mepc;
+                            is_jump = true;
                         }
                         _ => unimplemented!(),
                     },
@@ -427,6 +444,7 @@ impl Cpu {
             panic!("[Error]: the program is too big.");
         }
 
+        self.init();
         self.memory.array.copy_from_slice(code);
     }
 
