@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File},
     io::{BufReader, Read},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use tiny_rv32ima_sim::cpu::Cpu;
@@ -38,7 +38,7 @@ fn test_ui_flats() {
 
             println!("try: {:?}", filename);
 
-            if filename == "rv32ui-p-ld_st.bin" || filename == "rv32ui-p-ma_data.bin" {
+            if filename == "rv32ui-p-ld_st.bin" {
                 run_tests(&mut cpu, file_path, 0x2000);
             } else {
                 run_tests(&mut cpu, file_path, 0x1000);

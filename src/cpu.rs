@@ -218,18 +218,67 @@ impl Cpu {
         let mut is_jump = false;
 
         match opcode {
-            0b0001111 => match funct3 {
-                0 => {
-                    match self.inst {
-                        0x8330000f | 0x0100000f => unimplemented!(),
-                        _ => {
-                            // FENCE
-                            // キャッシュはまだ実装しないのでなにも行わない。
-                        }
+            0b0000011 => {
+                let imm = ((self.inst as i32) >> 20) as u32;
+
+                match funct3 {
+                    //[todo] refactor
+                    0b000 => {
+                        // LB
+
+                        let byte = self.read_memory(reg!(rs1).wrapping_add(imm))?;
+
+                        let value = u8::from_le_bytes(byte) as u32;
+                        let value = (((value << 24) as i32) >> 24) as u32;
+
+                        reg!(rd, value);
                     }
+                    0b001 => {
+                        // LH
+                        let byte = self.read_memory(reg!(rs1).wrapping_add(imm))?;
+
+                        let value = u16::from_le_bytes(byte) as u32;
+                        let value = (((value << 16) as i32) >> 16) as u32;
+
+                        reg!(rd, value);
+                    }
+                    0b010 => {
+                        // LW
+                        let bytes = self.read_memory(reg!(rs1).wrapping_add(imm))?;
+
+                        let value = u32::from_le_bytes(bytes) as u32;
+
+                        reg!(rd, value);
+                    }
+                    0b100 => {
+                        // LBU
+                        let byte = self.read_memory(reg!(rs1).wrapping_add(imm))?;
+
+                        let value = u8::from_le_bytes(byte) as u32;
+
+                        reg!(rd, value);
+                    }
+                    0b101 => {
+                        // LHU
+                        let byte = self.read_memory(reg!(rs1).wrapping_add(imm))?;
+
+                        let value = u16::from_le_bytes(byte) as u32;
+
+                        reg!(rd, value);
+                    }
+                    _ => unimplemented!(),
                 }
-                _ => unimplemented!(),
-            },
+            }
+            0b0001111 => {
+                match funct3 {
+                    0 => match self.inst {
+                        0x8330000f | 0x0100000f => illegal!(), // FENCE.TSO PAUSE
+                        _ => {}                                // FENCE
+                    },
+                    1 => {} // FENCE.I
+                    _ => unimplemented!(),
+                }
+            }
             0b0010011 => {
                 match funct3 {
                     0b000 => {
@@ -246,25 +295,69 @@ impl Cpu {
 
                         reg!(rd, reg!(rs1) << ((imm as u32) & 0x1f))
                     }
+                    0b010 => {
+                        // SLTI
+                        let imm = (self.inst as i32) >> 20;
+                        reg!(rd, if imm > reg!(rs1) as i32 { 1 } else { 0 })
+                    }
+                    0b011 => {
+                        // SLTIU
+                        let imm = ((self.inst as i32) >> 20) as u32;
+                        reg!(rd, if imm > reg!(rs1) { 1 } else { 0 })
+                    }
+                    0b100 => {
+                        // XORI
+                        let imm = ((self.inst as i32) >> 20) as u32;
+                        reg!(rd, reg!(rs1) ^ imm);
+                    }
+                    0b101 => {
+                        let imm = (self.inst >> 20) & 0x1f;
+                        let funct7 = self.inst >> 25;
+
+                        match funct7 {
+                            0b0000000 => reg!(rd, reg!(rs1) >> imm), // SRLI
+                            0b0100000 => reg!(rd, ((reg!(rs1) as i32) >> imm) as u32), // SRAI
+                            _ => unimplemented!(),
+                        }
+                    }
                     0b110 => {
                         // ORI
                         let imm = ((self.inst as i32) >> 20) as u32;
-                        reg!(rd, reg!(rs1) | imm)
+                        reg!(rd, reg!(rs1) | imm);
+                    }
+                    0b111 => {
+                        // ANDI
+                        let imm = ((self.inst as i32) >> 20) as u32;
+                        reg!(rd, reg!(rs1) & imm);
                     }
                     _ => unimplemented!(),
                 }
             }
             0b0010111 => reg!(rd, self.pc.wrapping_add(self.inst & 0xfffff000)), // AUIPC
             0b0100011 => {
+                let imm = ((self.inst >> (25 - 5)) & 0xfe0) | ((self.inst >> 7) & 0x1f);
+                let imm = (((imm << 20) as i32) >> 20) as u32;
+                let address = reg!(rs1).wrapping_add(imm);
+
                 match funct3 {
+                    //[todo] refactor
+                    0b000 => {
+                        //SB
+                        let bytes = (reg!(rs2) as u8).to_le_bytes();
+
+                        self.write_memory(address, &bytes)?;
+                    }
+                    0b001 => {
+                        // SH
+                        let bytes = (reg!(rs2) as u16).to_le_bytes();
+
+                        self.write_memory(address, &bytes)?;
+                    }
                     0b010 => {
                         // SW
-                        let imm = ((self.inst >> (25 - 5)) & 0xfe0) | ((self.inst >> 7) & 0x1f);
-                        let imm = (((imm << 20) as i32) >> 20) as u32;
-
                         let bytes = reg!(rs2).to_le_bytes();
 
-                        self.write_memory(reg!(rs1).wrapping_add(imm), &bytes)?;
+                        self.write_memory(address, &bytes)?;
                     }
                     _ => unimplemented!(),
                 }
@@ -274,6 +367,26 @@ impl Cpu {
 
                 match (funct3, funct7) {
                     (0b000, 0b0000000) => reg!(rd, reg!(rs1).wrapping_add(reg!(rs2))), // ADD
+                    (0b000, 0b0100000) => reg!(rd, reg!(rs1).wrapping_sub(reg!(rs2))), // SUB
+                    (0b001, 0b0000000) => reg!(rd, reg!(rs1) << (reg!(rs2) & 0x1f)),   // SLL
+                    (0b010, 0b0000000) => {
+                        reg!(
+                            rd,
+                            if (reg!(rs1) as i32) < (reg!(rs2) as i32) {
+                                1
+                            } else {
+                                0
+                            }
+                        )
+                    } // SLT
+                    (0b011, 0b0000000) => reg!(rd, if reg!(rs1) < reg!(rs2) { 1 } else { 0 }), // SLTU
+                    (0b100, 0b0000000) => reg!(rd, reg!(rs1) ^ reg!(rs2)), // XOR
+                    (0b101, 0b0000000) => reg!(rd, reg!(rs1) >> (reg!(rs2) & 0x1f)), // SRL
+                    (0b101, 0b0100000) => {
+                        reg!(rd, ((reg!(rs1) as i32) >> (reg!(rs2) & 0x1f)) as u32)
+                    } // SRA
+                    (0b110, 0b0000000) => reg!(rd, reg!(rs1) | reg!(rs2)), // OR
+                    (0b111, 0b0000000) => reg!(rd, reg!(rs1) & reg!(rs2)), // AND
                     _ => unimplemented!(),
                 }
             }
@@ -285,9 +398,12 @@ impl Cpu {
                     | ((self.inst >> 7) & 0x1e);
                 let imm = (((imm << 19) as i32) >> 19) as u32;
                 let flag = match funct3 {
-                    0b000 => reg!(rs1) == reg!(rs2),              // BEQ
-                    0b001 => reg!(rs1) != reg!(rs2),              // BNE
-                    0b100 => reg!(rs2) as i32 > reg!(rs1) as i32, //BLT
+                    0b000 => reg!(rs1) == reg!(rs2),               // BEQ
+                    0b001 => reg!(rs1) != reg!(rs2),               // BNE
+                    0b100 => reg!(rs2) as i32 > reg!(rs1) as i32,  //BLT
+                    0b101 => reg!(rs1) as i32 >= reg!(rs2) as i32, // BGE
+                    0b110 => reg!(rs2) > reg!(rs1),                // BLTU
+                    0b111 => reg!(rs1) >= reg!(rs2),               // BGEU
                     _ => unimplemented!(),
                 };
 
