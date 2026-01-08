@@ -367,8 +367,16 @@ impl Cpu {
 
                 match (funct3, funct7) {
                     (0b000, 0b0000000) => reg!(rd, reg!(rs1).wrapping_add(reg!(rs2))), // ADD
+                    (0b000, 0b0000001) => reg!(rd, reg!(rs1).wrapping_mul(reg!(rs2))), // MUL
                     (0b000, 0b0100000) => reg!(rd, reg!(rs1).wrapping_sub(reg!(rs2))), // SUB
                     (0b001, 0b0000000) => reg!(rd, reg!(rs1) << (reg!(rs2) & 0x1f)),   // SLL
+                    (0b001, 0b0000001) => {
+                        // MULH
+                        let rs1_value = (((reg!(rs1) as u64) << 32) as i64) >> 32;
+                        let rs2_value = (((reg!(rs2) as u64) << 32) as i64) >> 32;
+
+                        reg!(rd, ((rs1_value * rs2_value) >> 32) as u32);
+                    }
                     (0b010, 0b0000000) => {
                         reg!(
                             rd,
@@ -379,14 +387,86 @@ impl Cpu {
                             }
                         )
                     } // SLT
+                    (0b010, 0b0000001) => {
+                        // MULHSU
+                        let rs1_value = ((((reg!(rs1) as u64) << 32) as i64) >> 32) as u64;
+                        let rs2_value = reg!(rs2) as u64;
+
+                        reg!(rd, (rs1_value.wrapping_mul(rs2_value) >> 32) as u32);
+                    }
                     (0b011, 0b0000000) => reg!(rd, if reg!(rs1) < reg!(rs2) { 1 } else { 0 }), // SLTU
+                    (0b011, 0b0000001) => {
+                        // MULHU
+                        let rs1_value = reg!(rs1) as u64;
+                        let rs2_value = reg!(rs2) as u64;
+
+                        reg!(rd, (rs1_value.wrapping_mul(rs2_value) >> 32) as u32);
+                    }
                     (0b100, 0b0000000) => reg!(rd, reg!(rs1) ^ reg!(rs2)), // XOR
+                    (0b100, 0b0000001) => {
+                        // DIV
+                        let rs1_value = reg!(rs1);
+                        let rs2_value = reg!(rs2);
+
+                        let value = if rs1_value == 1 << 31 && rs2_value == !0 {
+                            rs1_value
+                        } else if rs2_value == 0 {
+                            u32::MAX
+                        } else {
+                            (rs1_value as i32 / rs2_value as i32) as u32
+                        };
+
+                        reg!(rd, value);
+                    }
                     (0b101, 0b0000000) => reg!(rd, reg!(rs1) >> (reg!(rs2) & 0x1f)), // SRL
+                    (0b101, 0b0000001) => {
+                        // DIVU
+                        let rs1_value = reg!(rs1);
+                        let rs2_value = reg!(rs2);
+
+                        reg!(
+                            rd,
+                            if rs2_value == 0 {
+                                u32::MAX
+                            } else {
+                                rs1_value / rs2_value
+                            }
+                        );
+                    }
                     (0b101, 0b0100000) => {
                         reg!(rd, ((reg!(rs1) as i32) >> (reg!(rs2) & 0x1f)) as u32)
                     } // SRA
                     (0b110, 0b0000000) => reg!(rd, reg!(rs1) | reg!(rs2)), // OR
+                    (0b110, 0b0000001) => {
+                        // REM
+                        let rs1_value = reg!(rs1);
+                        let rs2_value = reg!(rs2);
+
+                        let value = if rs1_value == 1 << 31 && rs2_value == !0 {
+                            0
+                        } else if rs2_value == 0 {
+                            rs1_value
+                        } else {
+                            (rs1_value as i32 % rs2_value as i32) as u32
+                        };
+
+                        reg!(rd, value);
+                    }
                     (0b111, 0b0000000) => reg!(rd, reg!(rs1) & reg!(rs2)), // AND
+                    (0b111, 0b0000001) => {
+                        // REMU
+                        let rs1_value = reg!(rs1);
+                        let rs2_value = reg!(rs2);
+
+                        reg!(
+                            rd,
+                            if rs2_value == 0 {
+                                rs1_value
+                            } else {
+                                rs1_value % rs2_value
+                            }
+                        );
+                    }
                     _ => unimplemented!(),
                 }
             }
