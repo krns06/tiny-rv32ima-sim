@@ -25,6 +25,8 @@ impl From<u32> for Priv {
 pub enum Exception {
     InstructionAddressMisaligned = 0,
     IlligalInstruction = 2,
+    LoadAddressMisaligned = 4,
+    StoreOrAMOAddressMisaligned = 6,
     EnvCallFromUser = 8,
     EnvCallFromMachine = 11,
     LoadAccessFault = 13,

@@ -65,6 +65,8 @@ pub struct Cpu {
     memory: Memory,
     csr: Csr,
 
+    reserved_address: Option<u32>, // For LR.W or SC.W
+
     is_debug: bool,
     riscv_tests_exit_memory_address: u32,
     riscv_tests_finished: bool,
@@ -83,10 +85,11 @@ impl Display for Cpu {
         let rs1 = (self.inst >> 15) & 0x1f;
         let rs2 = (self.inst >> 20) & 0x1f;
         let funct3 = (self.inst >> 12) & 0x7;
+        let funct7 = self.inst >> 25;
         f.write_str(&format!("inst: 0x{:08x}\n", self.inst))?;
         f.write_str(&format!(
-            "opcode: 0b{:07b} funct3: 0b{:03b}\n",
-            opcode, funct3
+            "opcode: 0b{:07b} funct3: 0b{:03b} funct7: 0b{:07b}\n",
+            opcode, funct3, funct7
         ))?;
         f.write_str(&format!(
             "rd: 0b{:05b} rs1: 0b{:05b} rs2: 0b{:05b}\n",
@@ -108,6 +111,7 @@ impl Cpu {
             inst: 0,
             memory: Memory::new(),
             csr: Csr::default(),
+            reserved_address: None,
             is_debug: false,
             riscv_tests_exit_memory_address: 0,
             riscv_tests_finished: false,
@@ -470,7 +474,60 @@ impl Cpu {
                     _ => unimplemented!(),
                 }
             }
-            0b0110111 => reg!(rd, self.inst & 0xfffff000), // LUI
+            0b0101111 => {
+                // AMO系命令
+                // hartは１つの想定なのでaq, rlは無視する。
+                let address = reg!(rs1);
+
+                if address % 4 != 0 {
+                    // アライメントされていない場合
+                    return Err(Exception::StoreOrAMOAddressMisaligned);
+                }
+
+                let upper_funct7 = self.inst >> 27;
+
+                match (funct3, upper_funct7) {
+                    (0b010, 0b00010) => {
+                        let value = u32::from_le_bytes(self.read_memory(address)?);
+
+                        reg!(rd, value);
+                        self.reserved_address = Some(address);
+                    } // LR.W
+                    (0b010, 0b00011) => {
+                        // SC.W
+                        if let Some(reserved_address) = self.reserved_address
+                            && reserved_address == address
+                        {
+                            self.write_memory(address, &reg!(rs2).to_le_bytes())?;
+                            reg!(rd, 0);
+                        } else {
+                            reg!(rd, 1);
+                        }
+
+                        self.reserved_address = None;
+                    }
+                    _ => {
+                        let original = u32::from_le_bytes(self.read_memory(address)?);
+
+                        let value = match (funct3, upper_funct7) {
+                            (0b010, 0b00000) => original.wrapping_add(reg!(rs2)), // AMOADD.W
+                            (0b010, 0b00001) => reg!(rs2),                        // AMOSWAP.W
+                            (0b010, 0b00100) => original ^ reg!(rs2),             // AMOOXOR.W
+                            (0b010, 0b01000) => original | reg!(rs2),             // AMOOOR.W
+                            (0b010, 0b01100) => original & reg!(rs2),             // AMOAND.W
+                            (0b010, 0b10000) => (original as i32).min(reg!(rs2) as i32) as u32, // AMOMIN.W
+                            (0b010, 0b10100) => (original as i32).max(reg!(rs2) as i32) as u32, // AMOMAX.W
+                            (0b010, 0b11000) => original.min(reg!(rs2)), // AMOMINU.W
+                            (0b010, 0b11100) => original.max(reg!(rs2)), // AMOMAXU.W
+                            _ => unimplemented!(),
+                        };
+
+                        reg!(rd, original);
+                        self.write_memory(address, &value.to_le_bytes())?;
+                    }
+                }
+            }
+            0b0110111 => reg!(rd, self.inst & 0xfffff000), // LUIll
             0b1100011 => {
                 let imm = ((self.inst >> 19) & 0x1000)
                     | ((self.inst << 4) & 0x800)
