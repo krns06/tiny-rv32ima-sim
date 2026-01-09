@@ -98,6 +98,16 @@ impl Display for Cpu {
 
         f.write_str(&format!("{:x?}\n", self.csr))?;
 
+        if self.is_debug {
+            f.write_str(&format!(
+                "[riscv_tests_value]: 0x{:08x}\n",
+                u32::from_le_bytes(
+                    self.memory
+                        .raw_read(into_addr(self.riscv_tests_exit_memory_address))
+                )
+            ))?;
+        }
+
         f.write_str("---------- DUMP END ----------\n")
     }
 }
@@ -182,6 +192,12 @@ impl Cpu {
                 break;
             }
 
+            //if self.pc >= 0x350 && self.pc <= 0x35c {
+            //    println!("{}", self);
+            //}
+
+            println!("[PC]: 0x{:08x}", self.pc);
+
             match self.step() {
                 Err(e) => self.handle_exception(e),
                 Ok(is_jump) => {
@@ -191,12 +207,20 @@ impl Cpu {
                     }
                 }
             }
+
+            self.csr.mcycle = self.csr.mcycle.wrapping_add(1);
         }
 
         let address = self.riscv_tests_exit_memory_address;
         let bytes = (self.memory.raw_read(into_addr(address)));
 
-        bytes == [1, 0, 0, 0]
+        let flag = bytes == [1, 0, 0, 0];
+
+        if !flag {
+            println!("{}", self);
+        }
+
+        flag
     }
 
     // jump命令: Ok(true) 他の命令: Ok(false)
@@ -583,37 +607,70 @@ impl Cpu {
                 is_jump = true;
             }
             0b1110011 => {
-                //[todo] valueについてはもっと綺麗に描けるかも
+                //[todo] valueについてはもっと綺麗に描けるかも。
+                //リファクタ時にはアクセスの順序に注意する。
                 let csr = self.inst >> 20;
 
                 match funct3 {
                     0b001 => {
                         // CSRRW
-                        if rd != 0 {
-                            let value = self.read_csr(csr)?;
-                            reg!(rd, value);
-                        }
+                        let value = if rd != 0 { self.read_csr(csr)? } else { 0 };
 
                         self.write_csr(csr, reg!(rs1))?;
+
+                        reg!(rd, value);
                     }
                     0b010 => {
                         // CSRRS
                         let value = self.read_csr(csr)?;
 
-                        reg!(rd, value);
-
                         if rs1 != 0 {
                             self.write_csr(csr, value | reg!(rs1))?;
                         }
+
+                        reg!(rd, value);
+                    }
+                    0b011 => {
+                        // CSRRC
+                        let value = self.read_csr(csr)?;
+                        let rs1_value = reg!(rs1);
+
+                        if rs1_value != 0 {
+                            self.write_csr(csr, value & !rs1_value)?;
+                        }
+
+                        reg!(rd, value);
                     }
                     0b101 => {
                         // CSRRWI
-                        if rd != 0 {
-                            let value = self.read_csr(csr)?;
-                            reg!(rd, value);
+                        let value = if rd != 0 { self.read_csr(csr)? } else { 0 };
+                        let imm = rs1;
+
+                        self.write_csr(csr, imm)?;
+
+                        reg!(rd, value);
+                    }
+                    0b110 => {
+                        // CSRRSI
+                        let value = self.read_csr(csr)?;
+                        let imm = rs1;
+
+                        if imm != 0 {
+                            self.write_csr(csr, value | imm)?;
                         }
 
-                        self.write_csr(csr, rs1)?;
+                        reg!(rd, value);
+                    }
+                    0b111 => {
+                        // CSRRCI
+                        let value = self.read_csr(csr)?;
+                        let imm = rs1;
+
+                        if imm != 0 {
+                            self.write_csr(csr, value & !imm)?;
+                        }
+
+                        reg!(rd, value);
                     }
                     _ => match self.inst {
                         0x00000073 => {
@@ -660,8 +717,9 @@ impl Cpu {
 
     #[inline]
     pub fn handle_exception(&mut self, e: Exception) {
-        self.prv = Priv::Machine;
-        self.csr.mcause = e as u32;
+        println!("[EXCEPTION]: {:?}", e);
+        self.prv = Priv::Machine; ////
+        self.csr.mcause = e as u32; ////
         // mepcはIALIGN==32のみサポートの場合は[0..1]は０
         //[todo] MMU実装時に仮想アドレスを表すものに変更する。
         self.csr.mepc = self.pc & !0x3;

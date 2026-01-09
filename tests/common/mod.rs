@@ -13,7 +13,7 @@ pub struct RiscvTest<'a> {
     pub exit_address: u32,
 }
 
-fn run_test<P: AsRef<Path>>(cpu: &mut Cpu, file_path: P, exit_address: u32) {
+pub fn run_test<P: AsRef<Path>>(cpu: &mut Cpu, file_path: P, exit_address: u32) {
     let file = File::open(file_path).unwrap();
     let mut reader = BufReader::new(file);
 

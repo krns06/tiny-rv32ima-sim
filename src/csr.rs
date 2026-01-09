@@ -7,12 +7,14 @@ macro_rules! unimplemented {
     };
 }
 
+// Machine
 const MHARTID: u32 = 0xf14;
 
 const MSTATUS: u32 = 0x300;
 const MISA: u32 = 0x301;
 const MIE: u32 = 0x304;
 const MTVEC: u32 = 0x305;
+const MCOUNTEREN: u32 = 0x306;
 const MSCRATCH: u32 = 0x340;
 const MEPC: u32 = 0x341;
 const MCAUSE: u32 = 0x342;
@@ -63,6 +65,18 @@ const MSTATUS_TSR: u32 = 1 << 22; //[todo] implement when sret instruction imple
 const MSTATUS_SUPPORTED: u32 =
     MSTATUS_SIE | MSTATUS_MIE | MSTATUS_SPIE | MSTATUS_MPIE | MSTATUS_SPP | MSTATUS_MPP;
 
+const COUNTEREN_CY: u32 = 1;
+const COUNTEREN_TM: u32 = 1 << 1;
+
+const MCOUNTEREN_SUPPORTED: u32 = COUNTEREN_CY | COUNTEREN_TM;
+
+// Supervisor
+const SCOUNTEREN: u32 = 0x106;
+
+// Unprivileged
+const CYCLE: u32 = 0xC00;
+const TIME: u32 = 0xC01;
+
 #[derive(Default, Debug)]
 pub struct Csr {
     pub mstatus: u32,
@@ -74,10 +88,12 @@ pub struct Csr {
     pub mtval: u32,
     pub mcause: u32,
 
-    pub satp: u32,
+    pub mcounteren: u32,
+    pub mcycle: u32,
 
-    pub cyclel: u32,
-    pub cycleh: u32,
+    pub satp: u32,
+    pub scounteren: u32,
+
     pub timerl: u32,
     pub timerh: u32,
     pub timermatchl: u32,
@@ -98,10 +114,19 @@ impl Csr {
             MTVEC => Ok(self.mtvec),
             MIE => Ok(self.mie),
             MEPC => Ok(self.mepc),
+            MSCRATCH => Ok(self.mscratch),
+            MCOUNTEREN => Ok(self.mcounteren),
 
             SATP => Ok(self.satp),
+            SCOUNTEREN => Ok(self.scounteren),
 
-            0x3b0 | 0x302 | 0x744 => illegal!(), // 未実装CSR
+            CYCLE => {
+                self.chceck_cycle_access(prv)?;
+
+                Ok(self.mcycle)
+            }
+
+            0x3b0 | 0x302 | 0x7a5 | 0x744 => illegal!(), // 未実装CSR
             _ => unimplemented!(),
         }
     }
@@ -114,7 +139,7 @@ impl Csr {
             MSTATUS => {
                 // 今の所はSWからサポートされている値を変更されても副作用はなさそう。
                 if value & !MSTATUS_SUPPORTED != 0 {
-                    unimplemented!()
+                    unimplemented!();
                 }
 
                 self.mstatus = value & MSTATUS_SUPPORTED;
@@ -128,6 +153,17 @@ impl Csr {
             MEPC => {
                 self.mepc = value & !0x3;
             }
+            MSCRATCH => {
+                self.mscratch = value;
+            }
+            MCOUNTEREN => {
+                // 今のところはCYとTMのみサポートしているが必要である場合は追加する。
+                if value & !MCOUNTEREN_SUPPORTED != 0 {
+                    unimplemented!();
+                }
+
+                self.mcounteren = value & MCOUNTEREN_SUPPORTED;
+            }
 
             SATP => {
                 if value != 0 {
@@ -137,7 +173,16 @@ impl Csr {
                 self.satp = value;
             }
 
-            0x3b0 | 0x302 | 0x744 => illegal!(), // 未実装CSR
+            SCOUNTEREN => {
+                // 今のところはCYとTMのみサポートしているが必要である場合は追加する。
+                if value & !MCOUNTEREN_SUPPORTED != 0 {
+                    unimplemented!();
+                }
+
+                self.scounteren = value & MCOUNTEREN_SUPPORTED;
+            }
+
+            0x3b0 | 0x302 | 0x7a5 | 0x744 => illegal!(), // 未実装CSR
             _ => unimplemented!(),
         }
 
@@ -165,6 +210,27 @@ impl Csr {
         }
 
         Ok(())
+    }
+
+    #[inline]
+    fn chceck_cycle_access(&self, prv: Priv) -> Result<()> {
+        match prv {
+            Priv::Machine => Ok(()),
+            Priv::Supervisor => {
+                if self.mcounteren & COUNTEREN_CY != 0 {
+                    Ok(())
+                } else {
+                    illegal!()
+                }
+            }
+            Priv::User => {
+                if self.mcounteren & COUNTEREN_CY != 0 && self.scounteren & COUNTEREN_CY != 0 {
+                    Ok(())
+                } else {
+                    illegal!()
+                }
+            }
+        }
     }
 
     // mrmetのCSRでの処理を行う関数
