@@ -1,6 +1,6 @@
 use tiny_rv32ima_sim::cpu::Cpu;
 
-use crate::common::{TEST_DIR, run_test, run_tests};
+use crate::common::{TEST_DIR, run_test};
 
 mod common;
 
@@ -10,7 +10,7 @@ fn test_ua_flats() {
 
     let rv32mi_p_dir = format!("{}/{}", TEST_DIR, "rv32mi-p");
 
-    let required_tests = ["rv32mi-p-csr.bin"];
+    let required_tests = ["rv32mi-p-csr.bin", "rv32mi-p-illegal.bin"];
 
     for test in required_tests {
         println!("TRY: {}", test);

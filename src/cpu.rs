@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use crate::{
-    Exception, Priv, Result,
+    Priv, Result, Trap,
     csr::Csr,
     illegal, into_addr,
     memory::{MEMORY_SIZE, Memory},
@@ -10,7 +10,7 @@ use crate::{
 // デバッグ用マクロ
 macro_rules! unimplemented {
     () => {
-        return Err(Exception::UnimplementedInstruction)
+        return Err(Trap::UnimplementedInstruction)
     };
 }
 
@@ -192,18 +192,18 @@ impl Cpu {
                 break;
             }
 
-            //if self.pc >= 0x350 && self.pc <= 0x35c {
-            //    println!("{}", self);
-            //}
-
             println!("[PC]: 0x{:08x}", self.pc);
 
             match self.step() {
-                Err(e) => self.handle_exception(e),
+                Err(e) => self.handle_trap(e),
                 Ok(is_jump) => {
                     if !is_jump {
-                        // JUMP系の命令でない場合にPCを更新する。
-                        self.pc += 4;
+                        if let Some(e) = self.check_intrrupt_active() {
+                            self.handle_trap(e);
+                        } else {
+                            // JUMP系の命令でない場合にPCを更新する。
+                            self.pc += 4;
+                        }
                     }
                 }
             }
@@ -212,7 +212,7 @@ impl Cpu {
         }
 
         let address = self.riscv_tests_exit_memory_address;
-        let bytes = (self.memory.raw_read(into_addr(address)));
+        let bytes = self.memory.raw_read(into_addr(address));
 
         let flag = bytes == [1, 0, 0, 0];
 
@@ -224,6 +224,9 @@ impl Cpu {
     }
 
     // jump命令: Ok(true) 他の命令: Ok(false)
+    // [todo] テストを通すためにテストで明示的に指定されるillegalな命令でillegal!を呼ぶが
+    // テストが全て終わり、rv32imaの命令がすべて実装し終わったらunimplemented!をillegal!
+    // に変更する。
     #[inline]
     pub fn step(&mut self) -> Result<bool> {
         macro_rules! reg {
@@ -236,6 +239,10 @@ impl Cpu {
         }
 
         self.inst = self.fetch()?;
+
+        if self.inst == 0 {
+            illegal!();
+        }
 
         let opcode = self.inst & 0x7f;
         let rd = (self.inst >> 7) & 0x1f;
@@ -505,7 +512,7 @@ impl Cpu {
 
                 if address % 4 != 0 {
                     // アライメントされていない場合
-                    return Err(Exception::StoreOrAMOAddressMisaligned);
+                    return Err(Trap::StoreOrAMOAddressMisaligned);
                 }
 
                 let upper_funct7 = self.inst >> 27;
@@ -575,7 +582,7 @@ impl Cpu {
             }
             0b1100111 => {
                 //JALR
-                if (funct3 != 0) {
+                if funct3 != 0 {
                     // funct3の検証
                     // これは検証すべきかはわからない。
                     // tinyemuでは無視してた。
@@ -623,9 +630,10 @@ impl Cpu {
                     0b010 => {
                         // CSRRS
                         let value = self.read_csr(csr)?;
+                        let rs1_value = reg!(rs1);
 
-                        if rs1 != 0 {
-                            self.write_csr(csr, value | reg!(rs1))?;
+                        if rs1_value != 0 {
+                            self.write_csr(csr, value | rs1_value)?;
                         }
 
                         reg!(rd, value);
@@ -676,10 +684,45 @@ impl Cpu {
                         0x00000073 => {
                             // ECALL
                             match self.prv {
-                                Priv::Machine => return Err(Exception::EnvCallFromMachine),
-                                Priv::User => return Err(Exception::EnvCallFromUser),
-                                _ => panic!("[ERROR]: Ecall from machine mode is only valid."),
+                                Priv::Machine => return Err(Trap::EnvCallFromMachine),
+                                Priv::Supervisor => return Err(Trap::EnvCallFromSupervisor),
+                                Priv::User => return Err(Trap::EnvCallFromUser),
                             }
+                        }
+                        0x10500073 => {
+                            // WFI
+                            if self.csr.is_enabled_mstatus_tw() || self.csr.is_enabled_mstatus_tvm()
+                            {
+                                illegal!()
+                            } else {
+                                loop {
+                                    if self.csr.is_interrupt_active() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        0x12000073 => {
+                            // SFENCE.VMA
+                            if !self.csr.is_paging_enabled() {
+                                panic!(
+                                    "[ERROR]: SFENCE.VMA is not supported when satp is not Bare mode."
+                                );
+                            }
+
+                            illegal!();
+                        }
+                        0x10200073 => {
+                            // SRET
+                            if self.prv == Priv::User || self.csr.is_enabled_mstatus_tsr() {
+                                illegal!()
+                            }
+
+                            let spp = self.csr.handle_sret()?;
+
+                            self.change_priv(spp.into());
+                            self.pc = self.csr.sepc;
+                            is_jump = true;
                         }
                         0x30200073 => {
                             // MRET
@@ -690,7 +733,7 @@ impl Cpu {
 
                             let mpp = self.csr.handle_mret()?;
 
-                            self.prv = mpp.into();
+                            self.change_priv(mpp.into());
                             self.pc = self.csr.mepc;
                             is_jump = true;
                         }
@@ -711,43 +754,42 @@ impl Cpu {
 
             Ok(u32::from_le_bytes(buf))
         } else {
-            Err(Exception::InstructionAddressMisaligned)
+            Err(Trap::InstructionAddressMisaligned)
         }
     }
 
+    // [todo]: handle_{exception,intrrupt}をまとめてhandle_trapにする。
     #[inline]
-    pub fn handle_exception(&mut self, e: Exception) {
+    pub fn handle_trap(&mut self, e: Trap) {
         println!("[EXCEPTION]: {:?}", e);
-        self.prv = Priv::Machine; ////
-        self.csr.mcause = e as u32; ////
-        // mepcはIALIGN==32のみサポートの場合は[0..1]は０
-        //[todo] MMU実装時に仮想アドレスを表すものに変更する。
-        self.csr.mepc = self.pc & !0x3;
 
-        self.csr.mtval = if e == Exception::IlligalInstruction {
-            self.inst
-        } else {
-            // 今はpcは仮想アドレス想定(実質物理アドレス)だが
-            //[todo] MMU実装したらここは仮想アドレスに変更する。
-            self.pc
-        };
+        match e {
+            Trap::UnimplementedCSR | Trap::UnimplementedInstruction => {
+                println!("{:?}", e);
+                panic!("{}", self);
+            }
+            _ => {
+                // mepcはIALIGN==32のみサポートの場合は[0..1]は０
+                //[todo] MMU実装時に仮想アドレスを表すものに変更する。
+                let (next_pc, next_prv) = self.csr.handle_trap(self.prv, e, self.pc, self.inst);
 
-        let mode = self.csr.mtvec & 0x3;
-        let base = self.csr.mtvec & !0x3;
-
-        if mode == 0 {
-            // Direct
-            // 同期例外は確定でこっちらしい
-            self.pc = base;
-        } else {
-            // Vectored
-            panic!("[ERROR]: Vectored mode of mtvec is not implemented.");
+                self.pc = next_pc;
+                self.change_priv(next_prv);
+            }
         }
+    }
 
-        if e == Exception::UnimplementedCSR || e == Exception::UnimplementedInstruction {
-            println!("{:?}", e);
-            panic!("{}", self);
-        }
+    // 割り込みが起こっているか確認する関数
+    // 起こっている場合は割り込みに対応するExceptionを返す。
+    #[inline]
+    pub fn check_intrrupt_active(&mut self) -> Option<Trap> {
+        self.csr.resolve_pending(self.prv)
+    }
+
+    #[inline]
+    fn change_priv(&mut self, prv: Priv) {
+        println!("[Change Priv]: from {:?} to {:?}", self.prv, prv);
+        self.prv = prv;
     }
 
     pub fn load_flat_program(&mut self, code: &[u8]) {

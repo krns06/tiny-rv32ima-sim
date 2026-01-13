@@ -1,4 +1,4 @@
-use crate::{Exception, Result, into_addr};
+use crate::{Result, Trap, into_addr};
 
 pub const MEMORY_SIZE: usize = 1024 * 1024;
 
@@ -39,7 +39,7 @@ impl Memory {
 
         // riscvの仕様書ではvacant address spaceは例外を起こしていいそうなので起こしている。
         if address + SIZE >= MEMORY_SIZE {
-            return Err(Exception::LoadAccessFault);
+            return Err(Trap::LoadAccessFault);
         }
 
         Ok(self.raw_read(address))
@@ -51,7 +51,7 @@ impl Memory {
 
         // riscvの仕様書ではvacant address spaceは例外を起こしていいそうなので起こしている。
         if address + SIZE >= MEMORY_SIZE {
-            return Err(Exception::LoadAccessFault);
+            return Err(Trap::LoadAccessFault);
         }
 
         Ok(self.raw_write(address, buf))

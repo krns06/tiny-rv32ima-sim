@@ -21,28 +21,46 @@ impl From<u32> for Priv {
     }
 }
 
+// [todo]; handle_trap関数実装時にExceptionから名前を変更する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Exception {
+pub enum Trap {
     InstructionAddressMisaligned = 0,
     IlligalInstruction = 2,
     LoadAddressMisaligned = 4,
     StoreOrAMOAddressMisaligned = 6,
     EnvCallFromUser = 8,
+    EnvCallFromSupervisor = 9,
     EnvCallFromMachine = 11,
     LoadAccessFault = 13,
+
+    SupervisorSoftwareInterrupt = 1 << 31 | 1,
 
     UnimplementedInstruction, // デバッグ用
     UnimplementedCSR,         // デバッグ用
 }
 
+impl Trap {
+    pub fn is_interrupt(&self) -> bool {
+        if (*self as u32) >> 31 == 1 {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn cause(&self) -> u32 {
+        (*self as u32) & !(1 << 31)
+    }
+}
+
 #[macro_export]
 macro_rules! illegal {
     () => {
-        return Err(Exception::IlligalInstruction)
+        return Err(Trap::IlligalInstruction)
     };
 }
 
-pub type Result<T> = std::result::Result<T, Exception>;
+pub type Result<T> = std::result::Result<T, Trap>;
 
 #[inline]
 pub const fn into_addr(x: u32) -> usize {
