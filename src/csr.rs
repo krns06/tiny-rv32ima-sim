@@ -12,6 +12,9 @@ const MHARTID: u32 = 0xf14;
 
 const MSTATUS: u32 = 0x300;
 const MISA: u32 = 0x301;
+const MVENDORID: u32 = 0xf11;
+const MARCHID: u32 = 0xf12;
+const MIMPID: u32 = 0xf13;
 const MEDELEG: u32 = 0x302;
 
 const MEDELEG_SUPPORTED: u32 = 0xcbbff;
@@ -151,6 +154,9 @@ impl Csr {
         match csr {
             MHARTID => Ok(0),
             MISA => Ok(MISA_SUPPORTED_VALUE),
+            MIMPID => Ok(1), //とりあえずバージョンは1
+            MARCHID => Ok(1),
+            MVENDORID => Ok(0),
 
             MSTATUS => Ok(self.mstatus),
             MCAUSE => Ok(self.mcause),
