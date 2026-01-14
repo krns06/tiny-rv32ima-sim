@@ -717,12 +717,12 @@ impl Cpu {
                         0x12000073 => {
                             // SFENCE.VMA
                             if !self.csr.is_paging_enabled() {
-                                panic!(
-                                    "[ERROR]: SFENCE.VMA is not supported when satp is not Bare mode."
-                                );
+                                illegal!();
                             }
 
-                            illegal!();
+                            if self.csr.is_enabled_mstatus_tvm() && self.prv == Priv::Supervisor {
+                                illegal!()
+                            }
                         }
                         0x10200073 => {
                             // SRET
