@@ -21,7 +21,6 @@ impl From<u32> for Priv {
     }
 }
 
-// [todo]; handle_trap関数実装時にExceptionから名前を変更する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trap {
     InstructionAddressMisaligned = 0,

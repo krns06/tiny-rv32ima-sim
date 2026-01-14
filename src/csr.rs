@@ -31,8 +31,6 @@ const MIP: u32 = 0x344;
 
 const MIP_SUPPORTED: u32 = IP_SEIP | IP_STIP | IP_SSIP;
 
-const SATP: u32 = 0x180;
-
 const MISA_MXL_SUPPORTED: u32 = 0x1 << 30; // 32bit
 const MISA_A: u32 = 1 << ('A' as u32 - 'A' as u32);
 const MISA_I: u32 = 1 << ('I' as u32 - 'A' as u32);
@@ -42,6 +40,13 @@ const MISA_U: u32 = 1 << ('U' as u32 - 'A' as u32);
 const MISA_S: u32 = 1 << ('S' as u32 - 'A' as u32);
 
 const MISA_SUPPORTED_VALUE: u32 = MISA_MXL_SUPPORTED | MISA_A | MISA_I | MISA_M | MISA_U | MISA_S;
+
+const MCYCLE: u32 = 0xb00;
+const MINSTRET: u32 = 0xb02;
+const MINSTRETH: u32 = 0xB82;
+
+const MINSTRET_MASK: u64 = 0xffffffff;
+const MINSTRETH_POS: u64 = 31;
 
 const IE_SSIE: u32 = 0x2;
 const IE_MSIE: u32 = 0x8;
@@ -94,6 +99,7 @@ const COUNTEREN_TM: u32 = 1 << 1;
 const MCOUNTEREN_SUPPORTED: u32 = COUNTEREN_CY | COUNTEREN_TM;
 
 // Supervisor
+const SATP: u32 = 0x180;
 const SSTATUS: u32 = 0x100;
 const SCOUNTEREN: u32 = 0x106;
 const SEPC: u32 = 0x141;
@@ -120,6 +126,8 @@ pub struct Csr {
     pub mcounteren: u32,
     pub mcycle: u32,
 
+    pub instret: u64, // 64bitのinstret 0-31がminstretで32-63がminstreth
+
     pub satp: u32,
     pub scounteren: u32,
     pub stvec: u32,
@@ -131,6 +139,8 @@ pub struct Csr {
     pub timerh: u32,
     pub timermatchl: u32,
     pub timermatchh: u32,
+
+    pub suppress_minsret: bool, // CSR命令でminsretが書き込まれた時にretireするときにincしないためのフラグ
 }
 
 impl Csr {
@@ -154,11 +164,14 @@ impl Csr {
             MEDELEG => Ok(self.medeleg),
             MIDELEG => Ok(self.mideleg),
 
-            SATP => Ok(self.satp),
+            MINSTRET => Ok(self.instret as u32),
+            MINSTRETH => Ok((self.instret >> MINSTRETH_POS) as u32),
+
             SCOUNTEREN => Ok(self.scounteren),
 
             SSTATUS => Ok(self.mstatus & SSTATUS_SUPPORTED),
             SEPC => Ok(self.sepc),
+            SATP => Ok(self.satp),
 
             CYCLE => {
                 self.chceck_cycle_access(prv)?;
@@ -175,7 +188,7 @@ impl Csr {
     pub fn write(&mut self, csr: u32, value: u32, prv: Priv) -> Result<()> {
         self.check_csr_access(csr, prv, true)?;
 
-        println!("[CSR] addr: {:08x} value: {:08x}", csr, value);
+        println!("[CSR] write addr: {:08x} value: {:08x}", csr, value);
 
         match csr {
             MSTATUS => {
@@ -201,6 +214,18 @@ impl Csr {
             MTVAL => self.mtval = value,
             MEDELEG => self.medeleg = value & MEDELEG_SUPPORTED,
             MIDELEG => self.mideleg = value & MIP_SUPPORTED,
+
+            MINSTRET => {
+                self.instret = (self.instret & !MINSTRET_MASK) | (value as u64);
+
+                self.suppress_minsret = true;
+            }
+
+            MINSTRETH => {
+                self.instret = (self.instret & MINSTRET_MASK) | ((value as u64) << MINSTRETH_POS);
+
+                self.suppress_minsret = true;
+            }
 
             SATP => {
                 if value != 0 {
@@ -289,6 +314,20 @@ impl Csr {
         }
     }
 
+    #[inline]
+    pub fn progress_cycle(&mut self) {
+        self.mcycle = self.mcycle.wrapping_add(1);
+    }
+
+    #[inline]
+    pub fn progress_instret(&mut self) {
+        if !self.suppress_minsret {
+            self.instret = self.instret.wrapping_add(1);
+        } else {
+            self.suppress_minsret = false;
+        }
+    }
+
     // mstatus.TWが有効かどうかを判定する関数
     #[inline]
     pub fn is_enabled_mstatus_tw(&self) -> bool {
@@ -323,8 +362,8 @@ impl Csr {
         let cause = e.cause();
 
         if from_prv == Priv::Machine
-            || (is_interrupt && (self.mideleg >> cause) == 0)
-            || (!is_interrupt && (self.medeleg >> cause) == 0)
+            || (is_interrupt && ((self.mideleg >> cause) & 0x1) == 0)
+            || (!is_interrupt && ((self.medeleg >> cause) & 0x1) == 0)
         {
             // 委譲しない場合
 

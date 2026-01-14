@@ -197,18 +197,18 @@ impl Cpu {
             match self.step() {
                 Err(e) => self.handle_trap(e),
                 Ok(is_jump) => {
-                    if !is_jump {
-                        if let Some(e) = self.check_intrrupt_active() {
-                            self.handle_trap(e);
-                        } else {
-                            // JUMP系の命令でない場合にPCを更新する。
-                            self.pc += 4;
-                        }
+                    self.csr.progress_instret();
+
+                    if let Some(e) = self.check_intrrupt_active() {
+                        self.handle_trap(e);
+                    } else if !is_jump {
+                        // JUMP系の命令でない場合にPCを更新する。
+                        self.pc += 4;
                     }
                 }
             }
 
-            self.csr.mcycle = self.csr.mcycle.wrapping_add(1);
+            self.csr.progress_cycle();
         }
 
         let address = self.riscv_tests_exit_memory_address;
