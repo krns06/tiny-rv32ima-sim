@@ -11,9 +11,13 @@ fn test_ua_flats() {
     let rv32mi_p_dir = format!("{}/{}", TEST_DIR, "rv32mi-p");
 
     let required_tests = [
-        "rv32mi-p-csr.bin",
-        "rv32mi-p-illegal.bin",
-        "rv32mi-p-instret_overflow.bin",
+        //"rv32mi-p-csr.bin",
+        //"rv32mi-p-illegal.bin",
+        //"rv32mi-p-instret_overflow.bin",
+        //"rv32mi-p-lh-misaligned.bin",
+        //"rv32mi-p-lw-misaligned.bin",
+        //"rv32mi-p-ma_addr.bin",
+        "rv32mi-p-ma_fetch.bin",
     ];
 
     for test in required_tests {

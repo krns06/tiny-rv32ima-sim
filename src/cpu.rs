@@ -65,7 +65,8 @@ pub struct Cpu {
     memory: Memory,
     csr: Csr,
 
-    reserved_address: Option<u32>, // For LR.W or SC.W
+    reserved_address: Option<u32>,   // For LR.W or SC.W
+    misaligned_address: Option<u32>, // アライメント例外の処理時にvaに代入される値。
 
     is_debug: bool,
     riscv_tests_exit_memory_address: u32,
@@ -122,6 +123,7 @@ impl Cpu {
             memory: Memory::new(),
             csr: Csr::default(),
             reserved_address: None,
+            misaligned_address: None,
             is_debug: false,
             riscv_tests_exit_memory_address: 0,
             riscv_tests_finished: false,
@@ -576,7 +578,11 @@ impl Cpu {
                 };
 
                 if flag {
-                    self.pc = self.pc.wrapping_add(imm);
+                    let next_pc = self.pc.wrapping_add(imm);
+
+                    self.check_misaligned_address(next_pc)?;
+
+                    self.pc = next_pc;
                     is_jump = true;
                 }
             }
@@ -589,10 +595,13 @@ impl Cpu {
                     unimplemented!();
                 }
 
-                let pc = self.pc;
                 let imm = (self.inst as i32) >> 20;
+                let pc = self.pc;
+                let next_pc = (imm as u32).wrapping_add(reg!(rs1)) & !1;
 
-                self.pc = (imm as u32).wrapping_add(reg!(rs1)) & !1;
+                self.check_misaligned_address(next_pc)?;
+
+                self.pc = next_pc;
 
                 reg!(rd, pc + 4);
 
@@ -607,8 +616,11 @@ impl Cpu {
 
                 let imm = ((imm << 11) as i32) >> 11;
                 let pc = self.pc;
+                let next_pc = pc.wrapping_add(imm as u32);
 
-                self.pc = pc.wrapping_add(imm as u32);
+                self.check_misaligned_address(next_pc)?;
+
+                self.pc = next_pc;
                 reg!(rd, pc + 4);
 
                 is_jump = true;
@@ -759,24 +771,28 @@ impl Cpu {
     }
 
     // [todo]: handle_{exception,intrrupt}をまとめてhandle_trapにする。
+    //[todo] MMU実装時にself.csr.handle_trapに渡すvaを仮想アドレスを表すものに変更する。
     #[inline]
     pub fn handle_trap(&mut self, e: Trap) {
         println!("[EXCEPTION]: {:?}", e);
 
-        match e {
+        let (next_pc, next_prv) = match e {
             Trap::UnimplementedCSR | Trap::UnimplementedInstruction => {
                 println!("{:?}", e);
                 panic!("{}", self);
             }
-            _ => {
-                // mepcはIALIGN==32のみサポートの場合は[0..1]は０
-                //[todo] MMU実装時に仮想アドレスを表すものに変更する。
-                let (next_pc, next_prv) = self.csr.handle_trap(self.prv, e, self.pc, self.inst);
-
-                self.pc = next_pc;
-                self.change_priv(next_prv);
+            Trap::InstructionAddressMisaligned => {
+                let misaligned_address = self.misaligned_address.unwrap();
+                self.misaligned_address = None;
+                self.csr
+                    .handle_trap(self.prv, e, self.pc, misaligned_address)
             }
-        }
+            Trap::IlligalInstruction => self.csr.handle_trap(self.prv, e, self.pc, self.inst),
+            _ => self.csr.handle_trap(self.prv, e, self.pc, self.pc),
+        };
+
+        self.pc = next_pc;
+        self.change_priv(next_prv);
     }
 
     // 割り込みが起こっているか確認する関数
@@ -784,6 +800,16 @@ impl Cpu {
     #[inline]
     pub fn check_intrrupt_active(&mut self) -> Option<Trap> {
         self.csr.resolve_pending(self.prv)
+    }
+
+    #[inline]
+    pub fn check_misaligned_address(&mut self, addr: u32) -> Result<()> {
+        if addr % 4 != 0 {
+            self.misaligned_address = Some(addr);
+            Err(Trap::InstructionAddressMisaligned)
+        } else {
+            Ok(())
+        }
     }
 
     #[inline]

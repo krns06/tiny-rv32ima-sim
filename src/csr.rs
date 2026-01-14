@@ -191,6 +191,7 @@ impl Csr {
         println!("[CSR] write addr: {:08x} value: {:08x}", csr, value);
 
         match csr {
+            MISA => {} // 書き込みは実装しない
             MSTATUS => {
                 if value & !MSTATUS_SUPPORTED != 0 {
                     unimplemented!();
@@ -315,6 +316,17 @@ impl Csr {
     }
 
     #[inline]
+    pub fn check_instruction_adress_misaligned(&mut self, addr: u32) -> Result<()> {
+        if addr % 4 != 0 {
+            self.mtval = addr;
+
+            Err(Trap::InstructionAddressMisaligned)
+        } else {
+            Ok(())
+        }
+    }
+
+    #[inline]
     pub fn progress_cycle(&mut self) {
         self.mcycle = self.mcycle.wrapping_add(1);
     }
@@ -357,7 +369,7 @@ impl Csr {
     // 移動先のアドレスを返す。
     // [todo]: refactor
     #[inline]
-    pub fn handle_trap(&mut self, from_prv: Priv, e: Trap, va: u32, inst: u32) -> (u32, Priv) {
+    pub fn handle_trap(&mut self, from_prv: Priv, e: Trap, va: u32, xtval: u32) -> (u32, Priv) {
         let is_interrupt = e.is_interrupt();
         let cause = e.cause();
 
@@ -369,12 +381,12 @@ impl Csr {
 
             self.mcause = e as u32;
 
-            //[todo] mtvalはもうちょっと細かいらしい。
-            self.mtval = if e == Trap::IlligalInstruction {
-                inst
-            } else {
-                va
-            };
+            if e != Trap::EnvCallFromMachine
+                && e != Trap::EnvCallFromSupervisor
+                && e != Trap::EnvCallFromUser
+            {
+                self.mtval = xtval;
+            }
 
             let mie = (self.mstatus & STATUS_MIE) >> STATUS_MIE_POS;
 
@@ -395,11 +407,12 @@ impl Csr {
 
             self.scause = e as u32;
 
-            self.stval = if e == Trap::IlligalInstruction {
-                inst
-            } else {
-                va
-            };
+            if e != Trap::EnvCallFromMachine
+                && e != Trap::EnvCallFromSupervisor
+                && e != Trap::EnvCallFromUser
+            {
+                self.stval = xtval;
+            }
 
             let spp = if from_prv == Priv::User { 0 } else { 1 };
             let sie = (self.mstatus & STATUS_SIE) >> STATUS_SIE_POS;
