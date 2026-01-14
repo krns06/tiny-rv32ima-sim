@@ -46,7 +46,7 @@ const MISA_SUPPORTED_VALUE: u32 = MISA_MXL_SUPPORTED | MISA_A | MISA_I | MISA_M 
 
 const MCYCLE: u32 = 0xb00;
 const MINSTRET: u32 = 0xb02;
-const MINSTRETH: u32 = 0xB82;
+const MINSTRETH: u32 = 0xb82;
 
 const MINSTRET_MASK: u64 = 0xffffffff;
 const MINSTRETH_POS: u64 = 31;
@@ -98,6 +98,7 @@ const MSTATUS_SUPPORTED: u32 = STATUS_SIE
 
 const COUNTEREN_CY: u32 = 1;
 const COUNTEREN_TM: u32 = 1 << 1;
+const COUNTEREN_IR: u32 = 1 << 2;
 
 const MCOUNTEREN_SUPPORTED: u32 = COUNTEREN_CY | COUNTEREN_TM;
 
@@ -111,7 +112,13 @@ const SSTATUS_SUPPORTED: u32 = STATUS_SIE | STATUS_SPIE | STATUS_SPP | STATUS_MX
 
 // Unprivileged
 const CYCLE: u32 = 0xC00;
+const CYCLEH: u32 = 0xc80;
 const TIME: u32 = 0xC01;
+const INSTRET: u32 = 0xc02;
+const INSTRETH: u32 = 0xc82;
+
+const CYCLEH_POS: u64 = 31;
+const INSTRETH_POS: u64 = 31;
 
 #[derive(Default, Debug)]
 pub struct Csr {
@@ -127,8 +134,8 @@ pub struct Csr {
     pub mideleg: u32,
 
     pub mcounteren: u32,
-    pub mcycle: u32,
 
+    pub cycle: u64,
     pub instret: u64, // 64bitのinstret 0-31がminstretで32-63がminstreth
 
     pub satp: u32,
@@ -150,6 +157,8 @@ impl Csr {
     #[inline]
     pub fn read(&self, csr: u32, prv: Priv) -> Result<u32> {
         self.check_csr_access(csr, prv, false)?;
+
+        println!("[CSR] read addr: {:08x}", csr);
 
         match csr {
             MHARTID => Ok(0),
@@ -182,7 +191,24 @@ impl Csr {
             CYCLE => {
                 self.chceck_cycle_access(prv)?;
 
-                Ok(self.mcycle)
+                Ok(self.cycle as u32)
+            }
+
+            CYCLEH => {
+                self.chceck_cycle_access(prv)?;
+
+                Ok((self.cycle >> CYCLEH_POS) as u32)
+            }
+
+            INSTRET => {
+                self.chceck_cycle_access(prv)?;
+
+                Ok(self.instret as u32)
+            }
+            INSTRETH => {
+                self.chceck_cycle_access(prv)?;
+
+                Ok((self.instret >> INSTRETH_POS) as u32)
             }
 
             0x3b0 | 0x7a5 | 0x744 => illegal!(), // 未実装CSR
@@ -302,23 +328,32 @@ impl Csr {
 
     #[inline]
     fn chceck_cycle_access(&self, prv: Priv) -> Result<()> {
-        match prv {
-            Priv::Machine => Ok(()),
-            Priv::Supervisor => {
-                if self.mcounteren & COUNTEREN_CY != 0 {
-                    Ok(())
-                } else {
-                    illegal!()
-                }
-            }
-            Priv::User => {
-                if self.mcounteren & COUNTEREN_CY != 0 && self.scounteren & COUNTEREN_CY != 0 {
-                    Ok(())
-                } else {
-                    illegal!()
-                }
+        if prv == Priv::Machine {
+            return Ok(());
+        }
+
+        if self.mcounteren & COUNTEREN_CY != 0 {
+            if prv == Priv::Supervisor || self.scounteren & COUNTEREN_CY != 0 {
+                return Ok(());
             }
         }
+
+        illegal!();
+    }
+
+    #[inline]
+    fn chceck_instret_access(&self, prv: Priv) -> Result<()> {
+        if prv == Priv::Machine {
+            return Ok(());
+        }
+
+        if self.mcounteren & COUNTEREN_IR != 0 {
+            if prv == Priv::Supervisor || self.scounteren & COUNTEREN_IR != 0 {
+                return Ok(());
+            }
+        }
+
+        illegal!();
     }
 
     #[inline]
@@ -334,7 +369,7 @@ impl Csr {
 
     #[inline]
     pub fn progress_cycle(&mut self) {
-        self.mcycle = self.mcycle.wrapping_add(1);
+        self.cycle = self.cycle.wrapping_add(1);
     }
 
     #[inline]

@@ -19,6 +19,11 @@ fn test_ua_flats() {
         "rv32mi-p-ma_addr.bin",
         "rv32mi-p-ma_fetch.bin",
         "rv32mi-p-mcsr.bin",
+        "rv32mi-p-scall.bin",
+        "rv32mi-p-sh-misaligned.bin",
+        "rv32mi-p-shamt.bin",
+        "rv32mi-p-sw-misaligned.bin",
+        "rv32mi-p-zicntr.bin",
     ];
 
     for test in required_tests {
