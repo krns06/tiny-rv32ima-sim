@@ -120,6 +120,7 @@ const SATP_ASID: u32 = 0x1ff << 22;
 const SATP_PPN: u32 = 0x3fffff;
 
 const SSTATUS_SUPPORTED: u32 = STATUS_SIE | STATUS_SPIE | STATUS_SPP | STATUS_MXR | STATUS_SUM;
+const SIE_SUPPORTED: u32 = IE_SSIE | IE_STIE | IE_SEIE;
 
 // Unprivileged
 const CYCLE: u32 = 0xC00;
@@ -198,10 +199,20 @@ impl Csr {
 
             SSTATUS => Ok(self.mstatus & SSTATUS_SUPPORTED),
             SEPC => Ok(self.sepc),
-            SATP => Ok(self.satp), // mstatus.TVM && Supervisorのときは例外を起こすべきらしいけどなぜかそれだとテストが通らなかったので仕様変更されている？
+            SATP => {
+                // mstatus.TVM && Supervisorのときは例外を起こすべきらしいけどなぜかそれだとテストが通らなかったので仕様変更されている？
+                if prv == Priv::Supervisor && self.is_enabled_mstatus_tvm() {
+                    illegal!();
+                }
+                Ok(self.satp)
+            }
+            // ""
             STVEC => Ok(self.stvec),
             SSCRATCH => Ok(self.sscratch),
             SCAUSE => Ok(self.scause),
+            STVAL => Ok(self.stval),
+            SIE => Ok(self.mie & SIE_SUPPORTED),
+            SIP => Ok(self.mip & SIE_SUPPORTED),
 
             CYCLE => {
                 self.chceck_cycle_access(prv)?;
@@ -275,7 +286,14 @@ impl Csr {
                 self.suppress_minsret = true;
             }
 
-            SATP => self.satp = value & !SATP_ASID, // ASID[8:7]=3 && BAREの場合はカスタムユースらしいが無視する。
+            SATP => {
+                if prv == Priv::Supervisor && self.is_enabled_mstatus_tvm() {
+                    illegal!();
+                }
+
+                // ASID[8:7]=3 && BAREの場合はカスタムユースらしいが無視する。
+                self.satp = value & !SATP_ASID
+            }
             SCOUNTEREN => {
                 // 今のところはCYとTMのみサポートしているが必要である場合は追加する。
                 if value & !MCOUNTEREN_SUPPORTED != 0 {
@@ -298,13 +316,14 @@ impl Csr {
                     println!("[WARNING]: sstatus.SUM is not supported.");
                 }
 
-                self.mstatus = (self.mstatus & !SSTATUS_SUPPORTED)
-                    | (value & (SSTATUS_SUPPORTED & !STATUS_SUM & !STATUS_MXR));
+                self.mstatus = (self.mstatus & !SSTATUS_SUPPORTED) | (value & SSTATUS_SUPPORTED);
             }
 
             SEPC => self.sepc = value & !0x3,
             STVEC => self.stvec = 0xfffffffd & value,
             SSCRATCH => self.sscratch = value,
+            SIE => self.mie = (self.mie & !SIE_SUPPORTED) | (value & SIE_SUPPORTED),
+            SIP => self.mip = (self.mip & !IE_SSIE) | (value & IE_SSIE),
 
             0x3b0 | 0x7a5 | 0x744 => illegal!(), // 未実装CSR
             _ => unimplemented!(),

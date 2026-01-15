@@ -866,11 +866,6 @@ impl Cpu {
                             }
                         }
                         0x12000073 => {
-                            // SFENCE.VMA
-                            if !self.csr.is_paging_enabled() {
-                                illegal!();
-                            }
-
                             if self.csr.is_enabled_mstatus_tvm() && self.prv == Priv::Supervisor {
                                 illegal!()
                             }
