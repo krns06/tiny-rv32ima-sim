@@ -8,10 +8,10 @@ mod common;
 fn test_ui_elves() {
     let mut cpu = Cpu::new();
 
-    let rv32ui_p_dir = format!("{}/{}", TEST_ELVES_DIR, "rv32ui");
+    let rv32ui_dir = format!("{}/{}", TEST_ELVES_DIR, "rv32ui");
     run_elf_tests(
         &mut cpu,
-        rv32ui_p_dir,
+        rv32ui_dir,
         0x80000000 | 0x1000,
         vec![RiscvTest {
             filename: "rv32ui-p-ld_st",
