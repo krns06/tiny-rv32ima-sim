@@ -7,6 +7,7 @@ pub(crate) use std::{
 use tiny_rv32ima_sim::cpu::Cpu;
 
 pub const TEST_DIR: &str = "tests/isa/flats";
+pub const TEST_ELVES_DIR: &str = "tests/isa/elves";
 
 pub struct RiscvTest<'a> {
     pub filename: &'a str,
@@ -21,6 +22,18 @@ pub fn run_test<P: AsRef<Path>>(cpu: &mut Cpu, file_path: P, exit_address: u32) 
     reader.read(&mut buf).unwrap();
 
     cpu.load_flat_program(&buf);
+    assert!(cpu.debug_run(exit_address));
+}
+
+pub fn run_elf_test<P: AsRef<Path>>(cpu: &mut Cpu, file_path: P, exit_address: u32) {
+    let file = File::open(file_path).unwrap();
+    let mut reader = BufReader::new(file);
+
+    let mut buf = vec![0; 1024 * 1024];
+    reader.read(&mut buf).unwrap();
+
+    cpu.set_memory_base_address(0x80000000);
+    cpu.load_elf_program(&buf);
     assert!(cpu.debug_run(exit_address));
 }
 

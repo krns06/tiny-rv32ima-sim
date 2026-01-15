@@ -1,7 +1,43 @@
 pub mod cpu;
 mod csr;
+mod elf;
 mod memory;
 mod simulator;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum AccessType {
+    Read = 1 << 1,
+    Write = 1 << 2,
+    Fetch = 1 << 3,
+}
+
+impl AccessType {
+    #[inline]
+    pub fn is_read(&self) -> bool {
+        *self == Self::Read
+    }
+
+    #[inline]
+    pub fn is_write(&self) -> bool {
+        *self == Self::Write
+    }
+
+    #[inline]
+    pub fn is_exec(&self) -> bool {
+        *self == Self::Fetch
+    }
+}
+
+impl From<AccessType> for Trap {
+    #[inline]
+    fn from(value: AccessType) -> Self {
+        match value {
+            AccessType::Read => Trap::LoadPageFault,
+            AccessType::Write => Trap::StoreOrAMOPageFault,
+            AccessType::Fetch => Trap::InstructionPageFault,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Priv {
@@ -26,11 +62,15 @@ pub enum Trap {
     InstructionAddressMisaligned = 0,
     IlligalInstruction = 2,
     LoadAddressMisaligned = 4,
+    LoadAccessFault = 5,
     StoreOrAMOAddressMisaligned = 6,
+    StoreOrAMOAccessFault = 7,
     EnvCallFromUser = 8,
     EnvCallFromSupervisor = 9,
     EnvCallFromMachine = 11,
-    LoadAccessFault = 13,
+    InstructionPageFault = 12,
+    LoadPageFault = 13,
+    StoreOrAMOPageFault = 15,
 
     SupervisorSoftwareInterrupt = 1 << 31 | 1,
 
@@ -61,6 +101,7 @@ macro_rules! illegal {
 
 pub type Result<T> = std::result::Result<T, Trap>;
 
+// [todo] 削除する
 #[inline]
 pub const fn into_addr(x: u32) -> usize {
     x as usize

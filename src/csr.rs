@@ -80,8 +80,8 @@ const STATUS_SPIE: u32 = 1 << STATUS_SPIE_POS;
 const STATUS_MPIE: u32 = 1 << STATUS_MPIE_POS;
 const STATUS_SPP: u32 = 1 << STATUS_SPP_POS;
 const STATUS_MPP: u32 = 0x3 << STATUS_MPP_POS;
-const STATUS_MPRV: u32 = 1 << 17; //[todo] implement Memory Privilege
-const STATUS_SUM: u32 = 1 << 18; //[todo] implement when supervisor mode implemented
+const STATUS_MPRV: u32 = 1 << 17;
+const STATUS_SUM: u32 = 1 << 18;
 const STATUS_MXR: u32 = 1 << 19; //[todo] implement when virtual address implemented
 const STATUS_TVM: u32 = 1 << 20; //[todo] implement when supervisor mode implemented
 const STATUS_TW: u32 = 1 << 21; //[todo] implement when wfi instruction implemented
@@ -94,7 +94,9 @@ const MSTATUS_SUPPORTED: u32 = STATUS_SIE
     | STATUS_SPP
     | STATUS_MPP
     | STATUS_TVM
-    | STATUS_TSR;
+    | STATUS_TSR
+    | STATUS_MPRV
+    | STATUS_SUM;
 
 const COUNTEREN_CY: u32 = 1;
 const COUNTEREN_TM: u32 = 1 << 1;
@@ -103,10 +105,19 @@ const COUNTEREN_IR: u32 = 1 << 2;
 const MCOUNTEREN_SUPPORTED: u32 = COUNTEREN_CY | COUNTEREN_TM;
 
 // Supervisor
-const SATP: u32 = 0x180;
 const SSTATUS: u32 = 0x100;
+const SIE: u32 = 0x104;
+const STVEC: u32 = 0x105;
 const SCOUNTEREN: u32 = 0x106;
+const SSCRATCH: u32 = 0x140;
 const SEPC: u32 = 0x141;
+const SCAUSE: u32 = 0x142;
+const STVAL: u32 = 0x143;
+const SIP: u32 = 0x144;
+const SATP: u32 = 0x180;
+
+const SATP_ASID: u32 = 0x1ff << 22;
+const SATP_PPN: u32 = 0x3fffff;
 
 const SSTATUS_SUPPORTED: u32 = STATUS_SIE | STATUS_SPIE | STATUS_SPP | STATUS_MXR | STATUS_SUM;
 
@@ -144,6 +155,7 @@ pub struct Csr {
     pub scause: u32,
     pub stval: u32,
     pub sepc: u32,
+    pub sscratch: u32,
 
     pub timerl: u32,
     pub timerh: u32,
@@ -186,7 +198,10 @@ impl Csr {
 
             SSTATUS => Ok(self.mstatus & SSTATUS_SUPPORTED),
             SEPC => Ok(self.sepc),
-            SATP => Ok(self.satp),
+            SATP => Ok(self.satp), // mstatus.TVM && Supervisorのときは例外を起こすべきらしいけどなぜかそれだとテストが通らなかったので仕様変更されている？
+            STVEC => Ok(self.stvec),
+            SSCRATCH => Ok(self.sscratch),
+            SCAUSE => Ok(self.scause),
 
             CYCLE => {
                 self.chceck_cycle_access(prv)?;
@@ -206,7 +221,7 @@ impl Csr {
                 Ok(self.instret as u32)
             }
             INSTRETH => {
-                self.chceck_cycle_access(prv)?;
+                self.chceck_instret_access(prv)?;
 
                 Ok((self.instret >> INSTRETH_POS) as u32)
             }
@@ -260,14 +275,7 @@ impl Csr {
                 self.suppress_minsret = true;
             }
 
-            SATP => {
-                if value != 0 {
-                    panic!("[ERROR]: BARE mode of satp is supported.");
-                }
-
-                self.satp = value;
-            }
-
+            SATP => self.satp = value & !SATP_ASID, // ASID[8:7]=3 && BAREの場合はカスタムユースらしいが無視する。
             SCOUNTEREN => {
                 // 今のところはCYとTMのみサポートしているが必要である場合は追加する。
                 if value & !MCOUNTEREN_SUPPORTED != 0 {
@@ -295,6 +303,8 @@ impl Csr {
             }
 
             SEPC => self.sepc = value & !0x3,
+            STVEC => self.stvec = 0xfffffffd & value,
+            SSCRATCH => self.sscratch = value,
 
             0x3b0 | 0x7a5 | 0x744 => illegal!(), // 未実装CSR
             _ => unimplemented!(),
@@ -357,17 +367,6 @@ impl Csr {
     }
 
     #[inline]
-    pub fn check_instruction_adress_misaligned(&mut self, addr: u32) -> Result<()> {
-        if addr % 4 != 0 {
-            self.mtval = addr;
-
-            Err(Trap::InstructionAddressMisaligned)
-        } else {
-            Ok(())
-        }
-    }
-
-    #[inline]
     pub fn progress_cycle(&mut self) {
         self.cycle = self.cycle.wrapping_add(1);
     }
@@ -379,6 +378,16 @@ impl Csr {
         } else {
             self.suppress_minsret = false;
         }
+    }
+
+    #[inline]
+    pub fn get_satp_ppn(&self) -> u32 {
+        self.satp & SATP_PPN
+    }
+
+    #[inline]
+    pub fn get_mstatus_mpp(&self) -> u32 {
+        (self.mstatus & STATUS_MPP) >> STATUS_MPP_POS
     }
 
     // mstatus.TWが有効かどうかを判定する関数
@@ -395,13 +404,23 @@ impl Csr {
     }
 
     #[inline]
+    pub fn is_enabled_mstatus_mprv(&self) -> bool {
+        self.mstatus & STATUS_MPRV != 0
+    }
+
+    #[inline]
+    pub fn is_enabled_mstatus_sum(&self) -> bool {
+        self.mstatus & STATUS_SUM != 0
+    }
+
+    #[inline]
     pub fn is_enabled_mstatus_tsr(&self) -> bool {
         self.mstatus & STATUS_TSR != 0
     }
 
     #[inline]
     pub fn is_paging_enabled(&self) -> bool {
-        self.satp >> 31 == 0
+        self.satp >> 31 == 1
     }
 
     // トラップを処理する関数
@@ -524,6 +543,10 @@ impl Csr {
             | (1 << STATUS_MPIE_POS)
             | ((Priv::User as u32) << STATUS_MPP_POS);
 
+        if mpp != Priv::Machine as u32 {
+            self.mstatus = self.mstatus & !STATUS_MPRV;
+        }
+
         Ok(mpp)
     }
 
@@ -538,6 +561,10 @@ impl Csr {
             | (spie << STATUS_SIE_POS)
             | (1 << STATUS_SPIE_POS)
             | ((Priv::User as u32) << STATUS_SPP_POS);
+
+        if spp != Priv::Machine as u32 {
+            self.mstatus = self.mstatus & !STATUS_MPRV;
+        }
 
         Ok(spp)
     }

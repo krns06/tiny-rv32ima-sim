@@ -1,11 +1,23 @@
 use std::fmt::Display;
 
 use crate::{
-    Priv, Result, Trap,
+    AccessType, Priv, Result, Trap,
     csr::Csr,
+    elf::{Elf32Ehdr, Elf32Phdr},
     illegal, into_addr,
     memory::{MEMORY_SIZE, Memory},
 };
+
+const PTE_V: u32 = 1;
+const PTE_R: u32 = 1 << 1;
+const PTE_W: u32 = 1 << 2;
+const PTE_X: u32 = 1 << 3;
+const PTE_U: u32 = 1 << 4;
+const PTE_A: u32 = 1 << 6;
+const PTE_D: u32 = 1 << 7;
+const PTESIZE: u32 = 4;
+
+const PAGESIZE: u32 = 4096;
 
 // デバッグ用マクロ
 macro_rules! unimplemented {
@@ -65,8 +77,8 @@ pub struct Cpu {
     memory: Memory,
     csr: Csr,
 
-    reserved_address: Option<u32>,   // For LR.W or SC.W
-    misaligned_address: Option<u32>, // アライメント例外の処理時にvaに代入される値。
+    reserved_address: Option<u32>, // For LR.W or SC.W
+    fault_address: Option<u32>,
 
     is_debug: bool,
     riscv_tests_exit_memory_address: u32,
@@ -123,7 +135,7 @@ impl Cpu {
             memory: Memory::new(),
             csr: Csr::default(),
             reserved_address: None,
-            misaligned_address: None,
+            fault_address: None,
             is_debug: false,
             riscv_tests_exit_memory_address: 0,
             riscv_tests_finished: false,
@@ -135,12 +147,19 @@ impl Cpu {
         self.pc = 0;
         self.inst = 0;
         self.csr = Csr::default();
-        self.is_debug = false;
+
+        self.reserved_address = None;
+        self.fault_address = None;
+
         self.riscv_tests_exit_memory_address = 0;
         self.riscv_tests_finished = false;
 
         self.regs.init();
         self.memory.init();
+    }
+
+    pub fn set_memory_base_address(&mut self, address: u32) {
+        self.memory.base_address = address;
     }
 
     fn read_reg(&self, reg: u32) -> u32 {
@@ -151,10 +170,140 @@ impl Cpu {
         self.regs.write(reg, value)
     }
 
+    fn translate_va(&mut self, va: u32, access_type: AccessType) -> Result<u32> {
+        // Mモードかつmstatus.MPRV=1かつLoad/Storeのときにtrueになる。
+        let enabled_in_m_mode = self.prv == Priv::Machine
+            && (access_type.is_read() || access_type.is_write())
+            && self.csr.is_enabled_mstatus_mprv();
+
+        if enabled_in_m_mode {
+            // MPRVが有効の場合はアドレス変換時はMPPの値を権限に設定する。
+
+            let mpp_prv = self.csr.get_mstatus_mpp().into();
+
+            if mpp_prv == Priv::Machine {
+                // もしmstatus.MPRV=1でもMPPがMPPモードの場合はアドレスの変換はしない。
+                return Ok(va);
+            }
+
+            self.change_priv(mpp_prv);
+        }
+
+        // M-mode && MPRV=0 && (Load || Store)のときかページングが有効でない場合は変換を行わない。
+        if (!enabled_in_m_mode) || !self.csr.is_paging_enabled() {
+            return Ok(va);
+        }
+
+        macro_rules! fault {
+            ($e:expr) => {{
+                if enabled_in_m_mode {
+                    self.change_priv(Priv::Machine);
+                }
+
+                self.fault_address = Some(va);
+
+                return Err($e);
+            }};
+            () => {
+                fault!(access_type.into());
+            };
+        }
+
+        let vpns = va >> 12;
+        let mut addr = self.csr.get_satp_ppn() * PAGESIZE;
+        let mut pte = 0;
+
+        let mut last = None;
+
+        for i in (0..2).rev() {
+            let vpn = (vpns >> (10 * i)) & 0x3ff;
+            let pte_addr = addr + vpn * PTESIZE;
+
+            pte = match self.memory.read_for_translation(pte_addr, access_type) {
+                Ok(buf) => u32::from_le_bytes(buf),
+                Err(e) => fault!(e),
+            };
+
+            let v = pte & PTE_V;
+            let r = pte & PTE_R;
+            let w = pte & PTE_W;
+            let x = pte & PTE_X;
+
+            if v == 0 || (r == 0 && w != 0) {
+                fault!();
+            }
+
+            if r != 0 || x != 0 {
+                // PTEを発見
+
+                if (r == access_type as u32)
+                    || (w == access_type as u32)
+                    || (x == access_type as u32)
+                {
+                    // 権限の確認
+                    //[todo] SUMとかMXRについての判定もここで行う。
+
+                    if i > 0 && pte & (0x3ff << 10) != 0 {
+                        // superpageのエラー
+                        fault!();
+                    }
+
+                    let u = pte & PTE_U;
+
+                    if (u == 0 && self.prv == Priv::User)
+                        || (u != 0
+                            && self.prv == Priv::Supervisor
+                            && !self.csr.is_enabled_mstatus_sum())
+                    {
+                        // U=0かつ権限がUモードの場合と
+                        // U=1かつ権限がSモードかつmstatus.SUM=1の場合は例外を出す
+                        fault!();
+                    }
+
+                    let a = pte & PTE_A;
+                    let d = pte & PTE_D;
+
+                    let is_write = access_type.is_write();
+
+                    if a == 0 || (is_write && d == 0) {
+                        //[todo] Svadeを将来的に実装する
+                        //自動更新の方ではテストが通らなさそう。
+
+                        fault!();
+                    }
+
+                    last = Some(i);
+                    break;
+                }
+            }
+
+            addr = (pte >> 10) * 4096;
+        }
+
+        if let Some(i) = last {
+            // 34bitのはずだけど2bitは無視できるっぽい
+            let pa = if i == 1 {
+                ((pte << 2) & 0xffc00000) | (va & 0x3fffff)
+            } else {
+                ((pte << 2) & 0xfffff000) | (va & 0xfff)
+            };
+
+            if enabled_in_m_mode {
+                self.change_priv(Priv::Machine);
+            }
+
+            Ok(pa)
+        } else {
+            fault!();
+        }
+    }
+
     // memory読み込みのラッパー関数
     // 将来的にはVirtual Adressとかその他の例外を実装するためにこのようにする。
     #[inline]
-    pub fn read_memory<const SIZE: usize>(&self, address: u32) -> Result<[u8; SIZE]> {
+    pub fn read_memory<const SIZE: usize>(&mut self, address: u32) -> Result<[u8; SIZE]> {
+        let address = self.translate_va(address, AccessType::Read)?;
+
         self.memory.read(address)
     }
 
@@ -167,6 +316,8 @@ impl Cpu {
         if address == self.riscv_tests_exit_memory_address {
             self.riscv_tests_finished = true;
         }
+
+        let address = self.translate_va(address, AccessType::Write)?;
 
         self.memory.write(address, buf)
     }
@@ -761,8 +912,10 @@ impl Cpu {
 
     #[inline]
     fn fetch(&mut self) -> Result<u32> {
-        if self.pc % 4 == 0 {
-            let buf = self.memory.raw_read(into_addr(self.pc));
+        let next_pc = self.translate_va(self.pc, AccessType::Fetch)?;
+
+        if next_pc % 4 == 0 {
+            let buf = self.memory.raw_read(into_addr(next_pc));
 
             Ok(u32::from_le_bytes(buf))
         } else {
@@ -781,11 +934,13 @@ impl Cpu {
                 println!("{:?}", e);
                 panic!("{}", self);
             }
-            Trap::InstructionAddressMisaligned => {
-                let misaligned_address = self.misaligned_address.unwrap();
-                self.misaligned_address = None;
-                self.csr
-                    .handle_trap(self.prv, e, self.pc, misaligned_address)
+            Trap::InstructionAddressMisaligned
+            | Trap::LoadPageFault
+            | Trap::StoreOrAMOPageFault
+            | Trap::InstructionPageFault => {
+                let fault_address = self.fault_address.unwrap();
+                self.fault_address = None;
+                self.csr.handle_trap(self.prv, e, self.pc, fault_address)
             }
             Trap::IlligalInstruction => self.csr.handle_trap(self.prv, e, self.pc, self.inst),
             _ => self.csr.handle_trap(self.prv, e, self.pc, self.pc),
@@ -805,7 +960,7 @@ impl Cpu {
     #[inline]
     pub fn check_misaligned_address(&mut self, addr: u32) -> Result<()> {
         if addr % 4 != 0 {
-            self.misaligned_address = Some(addr);
+            self.fault_address = Some(addr);
             Err(Trap::InstructionAddressMisaligned)
         } else {
             Ok(())
@@ -828,5 +983,44 @@ impl Cpu {
     }
 
     // [todo] lazy_load_flat_program
-    // [todo] load_elf_program
+
+    // [todo] ライブラリ使ったほうがいいと思うがとりあえず動けばいいや
+    pub fn load_elf_program(&mut self, code: &[u8]) {
+        self.init();
+
+        let ehdr_size = core::mem::size_of::<Elf32Ehdr>();
+        let ehdr = unsafe { *(&code[..ehdr_size] as *const _ as *const Elf32Ehdr) };
+
+        if !ehdr.is_valid() {
+            panic!("invalid ELF32");
+        }
+
+        let phnum = ehdr.e_phnum as usize;
+        let phoff = ehdr.e_phoff as usize;
+        let phentsize = ehdr.e_phentsize as usize;
+        let phdr_size = core::mem::size_of::<Elf32Phdr>();
+
+        for i in 0..phnum {
+            let offset = phoff + i * phentsize;
+            let phdr: Elf32Phdr =
+                unsafe { *(&code[offset..offset + phdr_size] as *const _ as *const Elf32Phdr) };
+
+            if !phdr.is_load_seg() {
+                continue;
+            }
+
+            let file_off = phdr.p_offset as usize;
+            let file_end = file_off + phdr.p_filesz as usize;
+
+            let mem_addr = (phdr.p_paddr as u32 - self.memory.base_address) as usize;
+            let mem_end = mem_addr + phdr.p_filesz as usize;
+
+            self.memory.array[mem_addr..mem_end].copy_from_slice(&code[file_off..file_end]);
+
+            let bss_end = mem_addr + phdr.p_memsz as usize;
+            self.memory.array[mem_end..bss_end].fill(0);
+        }
+
+        self.pc = ehdr.e_entry;
+    }
 }
