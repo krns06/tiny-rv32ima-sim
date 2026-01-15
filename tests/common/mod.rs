@@ -67,3 +67,34 @@ pub fn run_tests<P: AsRef<Path>>(
         }
     }
 }
+
+pub fn run_elf_tests<P: AsRef<Path>>(
+    cpu: &mut Cpu,
+    dir_path: P,
+    default_exit_address: u32,
+    excludes: Vec<RiscvTest>,
+) {
+    let dir = fs::read_dir(dir_path).unwrap();
+    for file in dir.into_iter() {
+        let file_path = file.unwrap().path();
+
+        if file_path.extension().is_none() {
+            let filename = file_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+
+            let mut exit_address = default_exit_address;
+            for exclude in &excludes {
+                if filename == exclude.filename {
+                    exit_address = exclude.exit_address;
+                }
+            }
+
+            println!("TRY: {}", filename);
+            run_elf_test(cpu, file_path, exit_address);
+            println!("PASS: {}", filename);
+        }
+    }
+}

@@ -250,13 +250,7 @@ impl Csr {
 
         match csr {
             MISA => {} // 書き込みは実装しない
-            MSTATUS => {
-                if value & !MSTATUS_SUPPORTED != 0 {
-                    unimplemented!();
-                }
-
-                self.mstatus = value & MSTATUS_SUPPORTED;
-            }
+            MSTATUS => self.mstatus = value & MSTATUS_SUPPORTED,
             MTVEC => self.mtvec = 0xfffffffd & value,
             MIE => self.mie = value & MIE_SUPPORTED,
             MIP => self.mip = value & MIP_SUPPORTED, // MEIP, MTIPの直接書き込みは無視する。

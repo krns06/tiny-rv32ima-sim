@@ -171,35 +171,34 @@ impl Cpu {
     }
 
     fn translate_va(&mut self, va: u32, access_type: AccessType) -> Result<u32> {
-        // Mモードかつmstatus.MPRV=1かつLoad/Storeのときにtrueになる。
-        let enabled_in_m_mode = self.prv == Priv::Machine
-            && (access_type.is_read() || access_type.is_write())
-            && self.csr.is_enabled_mstatus_mprv();
-
-        if enabled_in_m_mode {
-            // MPRVが有効の場合はアドレス変換時はMPPの値を権限に設定する。
-
-            let mpp_prv = self.csr.get_mstatus_mpp().into();
-
-            if mpp_prv == Priv::Machine {
-                // もしmstatus.MPRV=1でもMPPがMPPモードの場合はアドレスの変換はしない。
-                return Ok(va);
-            }
-
-            self.change_priv(mpp_prv);
+        if !self.csr.is_paging_enabled() {
+            return Ok(va);
         }
 
-        // M-mode && MPRV=0 && (Load || Store)のときかページングが有効でない場合は変換を行わない。
-        if (!enabled_in_m_mode) || !self.csr.is_paging_enabled() {
-            return Ok(va);
+        let mut local_prv = self.prv;
+
+        if local_prv == Priv::Machine {
+            let is_enabled_mprv = (access_type.is_read() || access_type.is_write())
+                && self.csr.is_enabled_mstatus_mprv();
+
+            if is_enabled_mprv {
+                // MPRVが有効の場合はアドレス変換時はMPPの値を権限に設定する。
+
+                let mpp_prv = self.csr.get_mstatus_mpp().into();
+
+                if mpp_prv == Priv::Machine {
+                    // もしmstatus.MPRV=1でもMPPがMPPモードの場合はアドレスの変換はしない。
+                    return Ok(va);
+                }
+
+                local_prv = mpp_prv;
+            } else {
+                return Ok(va);
+            }
         }
 
         macro_rules! fault {
             ($e:expr) => {{
-                if enabled_in_m_mode {
-                    self.change_priv(Priv::Machine);
-                }
-
                 self.fault_address = Some(va);
 
                 return Err($e);
@@ -250,9 +249,9 @@ impl Cpu {
 
                     let u = pte & PTE_U;
 
-                    if (u == 0 && self.prv == Priv::User)
+                    if (u == 0 && local_prv == Priv::User)
                         || (u != 0
-                            && self.prv == Priv::Supervisor
+                            && local_prv == Priv::Supervisor
                             && !self.csr.is_enabled_mstatus_sum())
                     {
                         // U=0かつ権限がUモードの場合と
@@ -288,10 +287,6 @@ impl Cpu {
                 ((pte << 2) & 0xfffff000) | (va & 0xfff)
             };
 
-            if enabled_in_m_mode {
-                self.change_priv(Priv::Machine);
-            }
-
             Ok(pa)
         } else {
             fault!();
@@ -313,11 +308,11 @@ impl Cpu {
         address: u32,
         buf: &[u8; SIZE],
     ) -> Result<()> {
+        let address = self.translate_va(address, AccessType::Write)?;
+
         if address == self.riscv_tests_exit_memory_address {
             self.riscv_tests_finished = true;
         }
-
-        let address = self.translate_va(address, AccessType::Write)?;
 
         self.memory.write(address, buf)
     }
@@ -343,6 +338,10 @@ impl Cpu {
         loop {
             if self.riscv_tests_finished {
                 break;
+            }
+
+            if self.pc == 0xffc02308 {
+                panic!("he");
             }
 
             println!("[PC]: 0x{:08x}", self.pc);
@@ -843,60 +842,72 @@ impl Cpu {
 
                         reg!(rd, value);
                     }
-                    _ => match self.inst {
-                        0x00000073 => {
-                            // ECALL
-                            match self.prv {
-                                Priv::Machine => return Err(Trap::EnvCallFromMachine),
-                                Priv::Supervisor => return Err(Trap::EnvCallFromSupervisor),
-                                Priv::User => return Err(Trap::EnvCallFromUser),
-                            }
-                        }
-                        0x10500073 => {
-                            // WFI
-                            if self.csr.is_enabled_mstatus_tw() || self.csr.is_enabled_mstatus_tvm()
-                            {
-                                illegal!()
-                            } else {
-                                loop {
-                                    if self.csr.is_interrupt_active() {
-                                        break;
-                                    }
+                    _ => {
+                        let funct7 = self.inst >> 25;
+
+                        // [todo] リファクタリングをいつかする。
+                        match funct7 {
+                            0b0001001 => {
+                                // SFENCE.VMA
+                                if self.csr.is_enabled_mstatus_tvm() && self.prv == Priv::Supervisor
+                                {
+                                    illegal!()
                                 }
                             }
+                            _ => match self.inst {
+                                0x00000073 => {
+                                    // ECALL
+                                    match self.prv {
+                                        Priv::Machine => return Err(Trap::EnvCallFromMachine),
+                                        Priv::Supervisor => {
+                                            return Err(Trap::EnvCallFromSupervisor);
+                                        }
+                                        Priv::User => return Err(Trap::EnvCallFromUser),
+                                    }
+                                }
+                                0x10500073 => {
+                                    // WFI
+                                    if self.csr.is_enabled_mstatus_tw()
+                                        || self.csr.is_enabled_mstatus_tvm()
+                                    {
+                                        illegal!()
+                                    } else {
+                                        loop {
+                                            if self.csr.is_interrupt_active() {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                0x10200073 => {
+                                    // SRET
+                                    if self.prv == Priv::User || self.csr.is_enabled_mstatus_tsr() {
+                                        illegal!()
+                                    }
+
+                                    let spp = self.csr.handle_sret()?;
+
+                                    self.change_priv(spp.into());
+                                    self.pc = self.csr.sepc;
+                                    is_jump = true;
+                                }
+                                0x30200073 => {
+                                    // MRET
+
+                                    if self.prv != Priv::Machine {
+                                        illegal!();
+                                    }
+
+                                    let mpp = self.csr.handle_mret()?;
+
+                                    self.change_priv(mpp.into());
+                                    self.pc = self.csr.mepc;
+                                    is_jump = true;
+                                }
+                                _ => unimplemented!(),
+                            },
                         }
-                        0x12000073 => {
-                            if self.csr.is_enabled_mstatus_tvm() && self.prv == Priv::Supervisor {
-                                illegal!()
-                            }
-                        }
-                        0x10200073 => {
-                            // SRET
-                            if self.prv == Priv::User || self.csr.is_enabled_mstatus_tsr() {
-                                illegal!()
-                            }
-
-                            let spp = self.csr.handle_sret()?;
-
-                            self.change_priv(spp.into());
-                            self.pc = self.csr.sepc;
-                            is_jump = true;
-                        }
-                        0x30200073 => {
-                            // MRET
-
-                            if self.prv != Priv::Machine {
-                                illegal!();
-                            }
-
-                            let mpp = self.csr.handle_mret()?;
-
-                            self.change_priv(mpp.into());
-                            self.pc = self.csr.mepc;
-                            is_jump = true;
-                        }
-                        _ => unimplemented!(),
-                    },
+                    }
                 }
             }
             _ => unimplemented!(),
