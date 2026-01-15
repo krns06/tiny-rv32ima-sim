@@ -340,10 +340,6 @@ impl Cpu {
                 break;
             }
 
-            if self.pc == 0xffc02308 {
-                panic!("he");
-            }
-
             println!("[PC]: 0x{:08x}", self.pc);
 
             match self.step() {

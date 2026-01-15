@@ -1,6 +1,6 @@
 use tiny_rv32ima_sim::cpu::Cpu;
 
-use crate::common::{RiscvTest, TEST_DIR, TEST_ELVES_DIR, run_elf_tests};
+use crate::common::{RiscvTest, TEST_ELVES_DIR, run_elf_tests};
 
 mod common;
 
