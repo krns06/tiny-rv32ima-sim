@@ -1,8 +1,11 @@
+use std::ops::Range;
+
 pub mod cpu;
 mod csr;
 mod elf;
 mod memory;
-mod simulator;
+mod sbi;
+mod uart;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AccessType {
@@ -46,6 +49,12 @@ pub enum Priv {
     Machine = 3,
 }
 
+impl Default for Priv {
+    fn default() -> Self {
+        Priv::Machine
+    }
+}
+
 impl From<u32> for Priv {
     fn from(value: u32) -> Self {
         match value {
@@ -61,6 +70,7 @@ impl From<u32> for Priv {
 pub enum Trap {
     InstructionAddressMisaligned = 0,
     IlligalInstruction = 2,
+    BreakPoint = 3,
     LoadAddressMisaligned = 4,
     LoadAccessFault = 5,
     StoreOrAMOAddressMisaligned = 6,
@@ -90,6 +100,14 @@ impl Trap {
     pub fn cause(&self) -> u32 {
         (*self as u32) & !(1 << 31)
     }
+}
+
+//[todo] read/write_memoryの修正後に取る値を適切な型に変更する
+pub trait Device {
+    fn get_range(&self) -> Range<u32>;
+
+    fn load(&self, address: usize) -> Result<Option<Vec<u8>>>;
+    fn store(&mut self, address: usize, value: &[u8]) -> Result<()>;
 }
 
 #[macro_export]

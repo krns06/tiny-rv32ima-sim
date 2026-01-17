@@ -1,11 +1,8 @@
 use std::fmt::Display;
 
 use crate::{
-    AccessType, Priv, Result, Trap,
-    csr::Csr,
-    elf::{Elf32Ehdr, Elf32Phdr},
-    illegal, into_addr,
-    memory::{MEMORY_SIZE, Memory},
+    AccessType, Device, Priv, Result, Trap, csr::Csr, illegal, into_addr, memory::Memory,
+    uart::Uart,
 };
 
 const PTE_V: u32 = 1;
@@ -19,6 +16,8 @@ const PTESIZE: u32 = 4;
 
 const PAGESIZE: u32 = 4096;
 
+const DTB_ADDR: u32 = 0x80100000;
+
 // デバッグ用マクロ
 macro_rules! unimplemented {
     () => {
@@ -27,9 +26,18 @@ macro_rules! unimplemented {
 }
 
 // read/write関数以外では操作してはいけない。
-#[derive(Default)]
 pub struct Registers {
     regs: [u32; 32],
+}
+
+impl Default for Registers {
+    fn default() -> Self {
+        let mut regs = [0; 32];
+
+        regs[11] = DTB_ADDR; // dtbはここに置いておく
+
+        Self { regs }
+    }
 }
 
 impl Display for Registers {
@@ -44,7 +52,7 @@ impl Display for Registers {
 
 impl Registers {
     pub fn init(&mut self) {
-        self.regs.fill(0);
+        *self = Self::default();
     }
 
     #[inline]
@@ -66,6 +74,7 @@ impl Registers {
     }
 }
 
+#[derive(Default)]
 pub struct Cpu {
     prv: Priv, // privは予約済みらしい
     regs: Registers,
@@ -76,6 +85,7 @@ pub struct Cpu {
 
     memory: Memory,
     csr: Csr,
+    devices: Vec<Box<dyn Device>>,
 
     reserved_address: Option<u32>, // For LR.W or SC.W
     fault_address: Option<u32>,
@@ -126,27 +136,14 @@ impl Display for Cpu {
 }
 
 impl Cpu {
-    pub fn new() -> Self {
-        Self {
-            prv: Priv::Machine,
-            regs: Registers::default(),
-            pc: 0,
-            inst: 0,
-            memory: Memory::new(),
-            csr: Csr::default(),
-            reserved_address: None,
-            fault_address: None,
-            is_debug: false,
-            riscv_tests_exit_memory_address: 0,
-            riscv_tests_finished: false,
-        }
-    }
-
     pub fn init(&mut self) {
         self.prv = Priv::Machine;
         self.pc = 0;
         self.inst = 0;
         self.csr = Csr::default();
+
+        let uart = Box::new(Uart);
+        self.devices = vec![uart];
 
         self.reserved_address = None;
         self.fault_address = None;
@@ -293,13 +290,40 @@ impl Cpu {
         }
     }
 
+    // デバイスがあればself.devicesに対するインデックスを返す関数
+    #[inline]
+    pub fn resolve_device_id(&self, address: u32) -> Option<usize> {
+        if self.memory.base_address > address {
+            for (id, device) in self.devices.iter().enumerate() {
+                if device.get_range().contains(&address) {
+                    return Some(id);
+                }
+            }
+        }
+
+        None
+    }
+
     // memory読み込みのラッパー関数
-    // 将来的にはVirtual Adressとかその他の例外を実装するためにこのようにする。
+    // [todo] SIZEでアクセスする方式よりread_memory_u32のようにしたほうがいいと思うので修正
     #[inline]
     pub fn read_memory<const SIZE: usize>(&mut self, address: u32) -> Result<[u8; SIZE]> {
         let address = self.translate_va(address, AccessType::Read)?;
+        eprintln!("[MEMORY]: read 0x{:08x}", address);
 
-        self.memory.read(address)
+        if let Some(id) = self.resolve_device_id(address) {
+            let res = if let Some(value) = self.devices[id].load(address as usize)? {
+                let mut res = [0; SIZE];
+                res.copy_from_slice(&value[..SIZE]);
+                res
+            } else {
+                [0; SIZE]
+            };
+
+            Ok(res)
+        } else {
+            self.memory.read(address)
+        }
     }
 
     #[inline]
@@ -309,12 +333,17 @@ impl Cpu {
         buf: &[u8; SIZE],
     ) -> Result<()> {
         let address = self.translate_va(address, AccessType::Write)?;
+        eprintln!("[MEMORY]: write 0x{:08x}", address);
 
-        if address == self.riscv_tests_exit_memory_address {
+        if self.is_debug && address == self.riscv_tests_exit_memory_address {
             self.riscv_tests_finished = true;
         }
 
-        self.memory.write(address, buf)
+        if let Some(id) = self.resolve_device_id(address) {
+            self.devices[id].store(address as usize, buf)
+        } else {
+            self.memory.write(address, buf)
+        }
     }
 
     #[inline]
@@ -327,20 +356,9 @@ impl Cpu {
         self.csr.write(csr, value, self.prv)
     }
 
-    pub fn run(&mut self) {}
-
-    // riscv-testsが通るか検証する関数
-    // true: 成功 false: 失敗
-    pub fn debug_run(&mut self, riscv_tests_exit_memory_address: u32) -> bool {
-        self.is_debug = true;
-        self.riscv_tests_exit_memory_address = riscv_tests_exit_memory_address;
-
+    pub fn run(&mut self) {
         loop {
-            if self.riscv_tests_finished {
-                break;
-            }
-
-            println!("[PC]: 0x{:08x}", self.pc);
+            eprintln!("[PC]: 0x{:08x}", self.pc);
 
             match self.step() {
                 Err(e) => self.handle_trap(e),
@@ -357,6 +375,39 @@ impl Cpu {
             }
 
             self.csr.progress_cycle();
+            self.csr.progress_time();
+        }
+    }
+
+    // riscv-testsが通るか検証する関数
+    // true: 成功 false: 失敗
+    pub fn debug_run(&mut self, riscv_tests_exit_memory_address: u32) -> bool {
+        self.is_debug = true;
+        self.riscv_tests_exit_memory_address = riscv_tests_exit_memory_address;
+
+        loop {
+            if self.riscv_tests_finished {
+                break;
+            }
+
+            eprintln!("[PC]: 0x{:08x}", self.pc);
+
+            match self.step() {
+                Err(e) => self.handle_trap(e),
+                Ok(is_jump) => {
+                    self.csr.progress_instret();
+
+                    if let Some(e) = self.check_intrrupt_active() {
+                        self.handle_trap(e);
+                    } else if !is_jump {
+                        // JUMP系の命令でない場合にPCを更新する。
+                        self.pc += 4;
+                    }
+                }
+            }
+
+            self.csr.progress_cycle();
+            self.csr.progress_time();
         }
 
         let address = self.riscv_tests_exit_memory_address;
@@ -365,7 +416,7 @@ impl Cpu {
         let flag = bytes == [1, 0, 0, 0];
 
         if !flag {
-            println!("{}", self);
+            eprintln!("{}", self);
         }
 
         flag
@@ -854,12 +905,16 @@ impl Cpu {
                                 0x00000073 => {
                                     // ECALL
                                     match self.prv {
-                                        Priv::Machine => return Err(Trap::EnvCallFromMachine),
                                         Priv::Supervisor => {
                                             return Err(Trap::EnvCallFromSupervisor);
                                         }
                                         Priv::User => return Err(Trap::EnvCallFromUser),
+                                        Priv::Machine => self.handle_sbi(),
                                     }
+                                }
+                                0x00100073 => {
+                                    //EBREAK
+                                    return Err(Trap::BreakPoint);
                                 }
                                 0x10500073 => {
                                     // WFI
@@ -869,6 +924,7 @@ impl Cpu {
                                         illegal!()
                                     } else {
                                         loop {
+                                            panic!("{}", self);
                                             if self.csr.is_interrupt_active() {
                                                 break;
                                             }
@@ -929,11 +985,11 @@ impl Cpu {
     //[todo] MMU実装時にself.csr.handle_trapに渡すvaを仮想アドレスを表すものに変更する。
     #[inline]
     pub fn handle_trap(&mut self, e: Trap) {
-        println!("[EXCEPTION]: {:?}", e);
+        eprintln!("[EXCEPTION]: {:?} at 0x{:08x}", e, self.pc);
 
         let (next_pc, next_prv) = match e {
             Trap::UnimplementedCSR | Trap::UnimplementedInstruction => {
-                println!("{:?}", e);
+                eprintln!("{:?}", e);
                 panic!("{}", self);
             }
             Trap::InstructionAddressMisaligned
@@ -971,58 +1027,24 @@ impl Cpu {
 
     #[inline]
     fn change_priv(&mut self, prv: Priv) {
-        println!("[Change Priv]: from {:?} to {:?}", self.prv, prv);
+        eprintln!("[Change Priv]: from {:?} to {:?}", self.prv, prv);
         self.prv = prv;
     }
 
-    pub fn load_flat_program(&mut self, code: &[u8]) {
-        if code.len() > MEMORY_SIZE {
-            panic!("[Error]: the program is too big.");
-        }
-
-        self.init();
-        self.memory.array.copy_from_slice(code);
+    pub fn load_flat_binary<const SIZE: usize>(&mut self, array: &[u8; SIZE], dst_addr: usize) {
+        self.memory.load_flat_binary(array, dst_addr);
     }
 
-    // [todo] lazy_load_flat_program
-
-    // [todo] ライブラリ使ったほうがいいと思うがとりあえず動けばいいや
-    pub fn load_elf_program(&mut self, code: &[u8]) {
+    pub fn load_flat_program<const SIZE: usize>(&mut self, array: &[u8; SIZE], base_addr: u32) {
         self.init();
+        self.set_memory_base_address(base_addr);
+        self.load_flat_binary(array, base_addr as usize);
+        self.pc = base_addr;
+    }
 
-        let ehdr_size = core::mem::size_of::<Elf32Ehdr>();
-        let ehdr = unsafe { *(&code[..ehdr_size] as *const _ as *const Elf32Ehdr) };
-
-        if !ehdr.is_valid() {
-            panic!("invalid ELF32");
-        }
-
-        let phnum = ehdr.e_phnum as usize;
-        let phoff = ehdr.e_phoff as usize;
-        let phentsize = ehdr.e_phentsize as usize;
-        let phdr_size = core::mem::size_of::<Elf32Phdr>();
-
-        for i in 0..phnum {
-            let offset = phoff + i * phentsize;
-            let phdr: Elf32Phdr =
-                unsafe { *(&code[offset..offset + phdr_size] as *const _ as *const Elf32Phdr) };
-
-            if !phdr.is_load_seg() {
-                continue;
-            }
-
-            let file_off = phdr.p_offset as usize;
-            let file_end = file_off + phdr.p_filesz as usize;
-
-            let mem_addr = (phdr.p_paddr as u32 - self.memory.base_address) as usize;
-            let mem_end = mem_addr + phdr.p_filesz as usize;
-
-            self.memory.array[mem_addr..mem_end].copy_from_slice(&code[file_off..file_end]);
-
-            let bss_end = mem_addr + phdr.p_memsz as usize;
-            self.memory.array[mem_end..bss_end].fill(0);
-        }
-
-        self.pc = ehdr.e_entry;
+    pub fn load_elf_program(&mut self, array: &[u8]) {
+        self.init();
+        let entry_point = self.memory.load_elf_binary(array);
+        self.pc = entry_point;
     }
 }

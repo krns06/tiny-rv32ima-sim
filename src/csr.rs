@@ -12,6 +12,7 @@ const MHARTID: u32 = 0xf14;
 
 const MSTATUS: u32 = 0x300;
 const MISA: u32 = 0x301;
+const MSTATUSH: u32 = 0x310;
 const MVENDORID: u32 = 0xf11;
 const MARCHID: u32 = 0xf12;
 const MIMPID: u32 = 0xf13;
@@ -31,8 +32,10 @@ const MEPC: u32 = 0x341;
 const MCAUSE: u32 = 0x342;
 const MTVAL: u32 = 0x343;
 const MIP: u32 = 0x344;
+const MENVCFG: u32 = 0x30a;
+const MENVCFGH: u32 = 0x31a;
 
-const MIP_SUPPORTED: u32 = IP_SEIP | IP_STIP | IP_SSIP;
+const MIP_SUPPORTED: u32 = IP_SEIP | IP_SSIP;
 
 const MISA_MXL_SUPPORTED: u32 = 0x1 << 30; // 32bit
 const MISA_A: u32 = 1 << ('A' as u32 - 'A' as u32);
@@ -44,9 +47,18 @@ const MISA_S: u32 = 1 << ('S' as u32 - 'A' as u32);
 
 const MISA_SUPPORTED_VALUE: u32 = MISA_MXL_SUPPORTED | MISA_A | MISA_I | MISA_M | MISA_U | MISA_S;
 
+const MENVCFGH_POS: u64 = 31;
+const MENVCFG_FIOM: u32 = 1;
+const MENVCFG_ADUE: u32 = 1 << 29;
+
 const MCYCLE: u32 = 0xb00;
 const MINSTRET: u32 = 0xb02;
 const MINSTRETH: u32 = 0xb82;
+const MHPMCOUNTER3: u32 = 0xb03; // 0固定でもいいっぽい。何をカウントしてもいいっぽい。将来的には使用する可能性あり。
+const MHPMCOUNTER31: u32 = 0xb1f;
+const MHPMCOUNTER3H: u32 = 0xb83;
+const MHPMCOUNTER31H: u32 = 0xb9f;
+const MCOUNTINHIBIT: u32 = 0x320;
 
 const MINSTRET_MASK: u64 = 0xffffffff;
 const MINSTRETH_POS: u64 = 31;
@@ -103,6 +115,8 @@ const COUNTEREN_TM: u32 = 1 << 1;
 const COUNTEREN_IR: u32 = 1 << 2;
 
 const MCOUNTEREN_SUPPORTED: u32 = COUNTEREN_CY | COUNTEREN_TM;
+const MCOUNTINHIBIT_INITIAL: u32 = !0x7;
+const MCOUNTINHIBIT_SUPPORTED: u32 = COUNTEREN_CY | COUNTEREN_CY;
 
 // Supervisor
 const SSTATUS: u32 = 0x100;
@@ -115,6 +129,7 @@ const SCAUSE: u32 = 0x142;
 const STVAL: u32 = 0x143;
 const SIP: u32 = 0x144;
 const SATP: u32 = 0x180;
+const STIMECMP: u32 = 0x14d;
 
 const SATP_ASID: u32 = 0x1ff << 22;
 const SATP_PPN: u32 = 0x3fffff;
@@ -130,6 +145,7 @@ const INSTRET: u32 = 0xc02;
 const INSTRETH: u32 = 0xc82;
 
 const CYCLEH_POS: u64 = 31;
+const TIMEH_POS: u64 = 31;
 const INSTRETH_POS: u64 = 31;
 
 #[derive(Default, Debug)]
@@ -144,11 +160,14 @@ pub struct Csr {
     pub mcause: u32,
     pub medeleg: u32,
     pub mideleg: u32,
+    pub menvcfg: u64,
 
     pub mcounteren: u32,
+    pub mcountinhibit: u32,
 
     pub cycle: u64,
     pub instret: u64, // 64bitのinstret 0-31がminstretで32-63がminstreth
+    pub time: u64,
 
     pub satp: u32,
     pub scounteren: u32,
@@ -157,11 +176,7 @@ pub struct Csr {
     pub stval: u32,
     pub sepc: u32,
     pub sscratch: u32,
-
-    pub timerl: u32,
-    pub timerh: u32,
-    pub timermatchl: u32,
-    pub timermatchh: u32,
+    pub stimecmp: u64,
 
     pub suppress_minsret: bool, // CSR命令でminsretが書き込まれた時にretireするときにincしないためのフラグ
 }
@@ -171,7 +186,7 @@ impl Csr {
     pub fn read(&self, csr: u32, prv: Priv) -> Result<u32> {
         self.check_csr_access(csr, prv, false)?;
 
-        println!("[CSR] read addr: {:08x}", csr);
+        eprintln!("[CSR] read addr: {:08x}", csr);
 
         match csr {
             MHARTID => Ok(0),
@@ -191,9 +206,14 @@ impl Csr {
             MTVAL => Ok(self.mtval),
             MEDELEG => Ok(self.medeleg),
             MIDELEG => Ok(self.mideleg),
+            MSTATUSH => Ok(0), // littleエンディアンのみ
+            MENVCFG => Ok(self.menvcfg as u32),
+            MENVCFGH => Ok((self.menvcfg >> MENVCFGH_POS) as u32),
 
             MINSTRET => Ok(self.instret as u32),
             MINSTRETH => Ok((self.instret >> MINSTRETH_POS) as u32),
+            MHPMCOUNTER3..=MHPMCOUNTER31 | MHPMCOUNTER3H..=MHPMCOUNTER31H => Ok(0),
+            MCOUNTINHIBIT => Ok(self.mcountinhibit | MCOUNTINHIBIT_INITIAL),
 
             SCOUNTEREN => Ok(self.scounteren),
 
@@ -213,6 +233,7 @@ impl Csr {
             STVAL => Ok(self.stval),
             SIE => Ok(self.mie & SIE_SUPPORTED),
             SIP => Ok(self.mip & SIE_SUPPORTED),
+            STIMECMP => Ok(self.stimecmp as u32),
 
             CYCLE => {
                 self.chceck_cycle_access(prv)?;
@@ -226,8 +247,14 @@ impl Csr {
                 Ok((self.cycle >> CYCLEH_POS) as u32)
             }
 
+            TIME => {
+                self.chceck_time_access(prv)?;
+
+                Ok(self.time as u32)
+            }
+
             INSTRET => {
-                self.chceck_cycle_access(prv)?;
+                self.chceck_instret_access(prv)?;
 
                 Ok(self.instret as u32)
             }
@@ -237,7 +264,9 @@ impl Csr {
                 Ok((self.instret >> INSTRETH_POS) as u32)
             }
 
-            0x3b0 | 0x7a5 | 0x744 => illegal!(), // 未実装CSR
+            0x3b0 | 0x7a5 | 0x744 | 0x3a0 | 0xda0 | 0xfb0 | 0x30c | 0x10c | 0x321 | 0x7a0 => {
+                illegal!()
+            } // 未実装CSR
             _ => unimplemented!(),
         }
     }
@@ -246,10 +275,10 @@ impl Csr {
     pub fn write(&mut self, csr: u32, value: u32, prv: Priv) -> Result<()> {
         self.check_csr_access(csr, prv, true)?;
 
-        println!("[CSR] write addr: {:08x} value: {:08x}", csr, value);
+        eprintln!("[CSR] write addr: {:08x} value: {:08x}", csr, value);
 
         match csr {
-            MISA => {} // 書き込みは実装しない
+            MISA | MSTATUSH | MHPMCOUNTER3..=MHPMCOUNTER31 | MHPMCOUNTER3H..=MHPMCOUNTER31H => {} // 書き込みは実装しない
             MSTATUS => self.mstatus = value & MSTATUS_SUPPORTED,
             MTVEC => self.mtvec = 0xfffffffd & value,
             MIE => self.mie = value & MIE_SUPPORTED,
@@ -258,16 +287,17 @@ impl Csr {
             MSCRATCH => self.mscratch = value,
             MCOUNTEREN => {
                 // 今のところはCYとTMのみサポートしているが必要である場合は追加する。
-                if value & !MCOUNTEREN_SUPPORTED != 0 {
-                    unimplemented!();
-                }
+                //if value & !MCOUNTEREN_SUPPORTED != 0 {
+                //    unimplemented!();
+                //}
 
                 self.mcounteren = value & MCOUNTEREN_SUPPORTED;
             }
             MTVAL => self.mtval = value,
             MEDELEG => self.medeleg = value & MEDELEG_SUPPORTED,
             MIDELEG => self.mideleg = value & MIP_SUPPORTED,
-
+            MENVCFG => self.menvcfg = (self.menvcfg & 0xffff0000) | (value & MENVCFG_FIOM) as u64,
+            MENVCFGH => self.menvcfg = self.menvcfg | ((value & MENVCFG_ADUE) << 31) as u64,
             MINSTRET => {
                 self.instret = (self.instret & !MINSTRET_MASK) | (value as u64);
 
@@ -278,6 +308,14 @@ impl Csr {
                 self.instret = (self.instret & MINSTRET_MASK) | ((value as u64) << MINSTRETH_POS);
 
                 self.suppress_minsret = true;
+            }
+            MCOUNTINHIBIT => {
+                // mphmcounterNをまともに実装していない場合について記述がなかったのでとりあえずこのようにする。
+                //if value & MCOUNTINHIBIT_INITIAL != 0 {
+                //    unimplemented!();
+                //}
+                self.mcountinhibit = (self.mcountinhibit | MCOUNTINHIBIT_INITIAL)
+                    | (value & MCOUNTINHIBIT_SUPPORTED);
             }
 
             SATP => {
@@ -303,11 +341,11 @@ impl Csr {
                 }
 
                 if value & STATUS_MXR != 0 {
-                    println!("[WARNING]: sstatus.MXR is not supported.");
+                    eprintln!("[WARNING]: sstatus.MXR is not supported.");
                 }
 
                 if value & STATUS_SUM != 0 {
-                    println!("[WARNING]: sstatus.SUM is not supported.");
+                    eprintln!("[WARNING]: sstatus.SUM is not supported.");
                 }
 
                 self.mstatus = (self.mstatus & !SSTATUS_SUPPORTED) | (value & SSTATUS_SUPPORTED);
@@ -319,7 +357,7 @@ impl Csr {
             SIE => self.mie = (self.mie & !SIE_SUPPORTED) | (value & SIE_SUPPORTED),
             SIP => self.mip = (self.mip & !IE_SSIE) | (value & IE_SSIE),
 
-            0x3b0 | 0x7a5 | 0x744 => illegal!(), // 未実装CSR
+            0x3b0 | 0x7a5 | 0x744 | 0x3a0 => illegal!(), // 未実装CSR
             _ => unimplemented!(),
         }
 
@@ -365,6 +403,21 @@ impl Csr {
     }
 
     #[inline]
+    fn chceck_time_access(&self, prv: Priv) -> Result<()> {
+        if prv == Priv::Machine {
+            return Ok(());
+        }
+
+        if self.mcounteren & COUNTEREN_TM != 0 {
+            if prv == Priv::Supervisor || self.scounteren & COUNTEREN_TM != 0 {
+                return Ok(());
+            }
+        }
+
+        illegal!();
+    }
+
+    #[inline]
     fn chceck_instret_access(&self, prv: Priv) -> Result<()> {
         if prv == Priv::Machine {
             return Ok(());
@@ -381,13 +434,22 @@ impl Csr {
 
     #[inline]
     pub fn progress_cycle(&mut self) {
-        self.cycle = self.cycle.wrapping_add(1);
+        if self.mcountinhibit & COUNTEREN_CY == 0 {
+            self.cycle = self.cycle.wrapping_add(1);
+        }
+    }
+
+    #[inline]
+    pub fn progress_time(&mut self) {
+        self.time = self.time.wrapping_add(1);
     }
 
     #[inline]
     pub fn progress_instret(&mut self) {
         if !self.suppress_minsret {
-            self.instret = self.instret.wrapping_add(1);
+            if self.mcountinhibit & COUNTEREN_IR == 0 {
+                self.instret = self.instret.wrapping_add(1);
+            }
         } else {
             self.suppress_minsret = false;
         }
