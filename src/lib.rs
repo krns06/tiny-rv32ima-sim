@@ -4,8 +4,8 @@ pub mod cpu;
 mod csr;
 mod elf;
 mod memory;
+mod mmio;
 mod sbi;
-mod uart;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AccessType {
@@ -83,6 +83,7 @@ pub enum Trap {
     StoreOrAMOPageFault = 15,
 
     SupervisorSoftwareInterrupt = 1 << 31 | 1,
+    SupervisorTimerInterrupt = 1 << 31 | 5,
 
     UnimplementedInstruction, // デバッグ用
     UnimplementedCSR,         // デバッグ用
@@ -107,7 +108,7 @@ pub trait Device {
     fn get_range(&self) -> Range<u32>;
 
     fn load(&self, address: usize) -> Result<Option<Vec<u8>>>;
-    fn store(&mut self, address: usize, value: &[u8]) -> Result<()>;
+    fn store(&mut self, address: usize) -> Result<()>;
 }
 
 #[macro_export]

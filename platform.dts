@@ -5,9 +5,10 @@
   #size-cells = <1>;
 
     chosen {
+      bootargs = "earlycon=uart8250,mmio,0x10000000 console=ttyS0 ";
       opensbi-config {
         compatible = "opensbi,config";
-        stdout-path = "/serial@10000000";
+        stdout-path = "/soc/serial@10000000";
       };
     };
 
@@ -20,20 +21,52 @@
       #address-cells = <1>;
       #size-cells = <0>;
 		  timebase-frequency = <0x989680>;
+
+      cpu-map {
+        cluster0 {
+          core0 {
+              cpu = <0x01>;
+          };
+        };
+      };
+
     
       cpu0: cpu@0 {
+			    phandle = <0x01>;
           device_type = "cpu";
           status = "okay";
           riscv,isa-base = "rv32i";
-          riscv,isa = "rv32imazicsr_zifencei_zicntr_zmmul_zaamo_zalrsc";
+          riscv,isa = "rv32ima_zicsr_zifencei_zicntr_zmmul_zaamo_zalrsc_svadu";
+          riscv,isa-extensions = "i", "m", "a", "svadu", "zicsr", "zifencei", "zicntr", "zmmul", "zaamo", "zalrsc";
           mmu-type = "riscv,sv32";
           reg = <0>;
           compatible = "riscv";
+
+          cpu0_int: interrupt-controller {
+				    #interrupt-cells = <1>;
+            interrupt-controller;
+            compatible = "riscv,cpu-intc";
+          };
       };
     };
-    
-    uart0: serial@10000000 {
-      compatible = "ns16550a";
-      reg = <0x10000000 0x100>;
+
+    soc {
+      #address-cells = <1>;
+      #size-cells = <1>;
+      compatible = "simple-bus";
+      ranges;
+
+
+      clint@2000000 {
+        reg = <0x2000000 0x10000>;
+        compatible = "sifive,clint0", "riscv,clint0";
+        interrupts-extended = <&cpu0_int 3 &cpu0_int 7>;
+      };
+
+      
+      uart0: serial@10000000 {
+        compatible = "ns16550a";
+        reg = <0x10000000 0x100>;
+      };
     };
 };

@@ -1,9 +1,6 @@
 use std::fmt::Display;
 
-use crate::{
-    AccessType, Device, Priv, Result, Trap, csr::Csr, illegal, into_addr, memory::Memory,
-    uart::Uart,
-};
+use crate::{AccessType, Device, Priv, Result, Trap, csr::Csr, illegal, into_addr, memory::Memory};
 
 const PTE_V: u32 = 1;
 const PTE_R: u32 = 1 << 1;
@@ -26,6 +23,7 @@ macro_rules! unimplemented {
 }
 
 // read/write関数以外では操作してはいけない。
+#[derive(Debug)]
 pub struct Registers {
     regs: [u32; 32],
 }
@@ -83,9 +81,8 @@ pub struct Cpu {
     // 現在実行中の命令列
     inst: u32,
 
-    memory: Memory,
-    csr: Csr,
-    devices: Vec<Box<dyn Device>>,
+    pub(crate) memory: Memory,
+    pub(crate) csr: Csr,
 
     reserved_address: Option<u32>, // For LR.W or SC.W
     fault_address: Option<u32>,
@@ -141,9 +138,6 @@ impl Cpu {
         self.pc = 0;
         self.inst = 0;
         self.csr = Csr::default();
-
-        let uart = Box::new(Uart);
-        self.devices = vec![uart];
 
         self.reserved_address = None;
         self.fault_address = None;
@@ -290,40 +284,13 @@ impl Cpu {
         }
     }
 
-    // デバイスがあればself.devicesに対するインデックスを返す関数
-    #[inline]
-    pub fn resolve_device_id(&self, address: u32) -> Option<usize> {
-        if self.memory.base_address > address {
-            for (id, device) in self.devices.iter().enumerate() {
-                if device.get_range().contains(&address) {
-                    return Some(id);
-                }
-            }
-        }
-
-        None
-    }
-
     // memory読み込みのラッパー関数
     // [todo] SIZEでアクセスする方式よりread_memory_u32のようにしたほうがいいと思うので修正
     #[inline]
     pub fn read_memory<const SIZE: usize>(&mut self, address: u32) -> Result<[u8; SIZE]> {
-        let address = self.translate_va(address, AccessType::Read)?;
-        eprintln!("[MEMORY]: read 0x{:08x}", address);
+        let pa = self.translate_va(address, AccessType::Read)?;
 
-        if let Some(id) = self.resolve_device_id(address) {
-            let res = if let Some(value) = self.devices[id].load(address as usize)? {
-                let mut res = [0; SIZE];
-                res.copy_from_slice(&value[..SIZE]);
-                res
-            } else {
-                [0; SIZE]
-            };
-
-            Ok(res)
-        } else {
-            self.memory.read(address)
-        }
+        self.access_memory_read(pa)
     }
 
     #[inline]
@@ -332,18 +299,13 @@ impl Cpu {
         address: u32,
         buf: &[u8; SIZE],
     ) -> Result<()> {
-        let address = self.translate_va(address, AccessType::Write)?;
-        eprintln!("[MEMORY]: write 0x{:08x}", address);
+        let pa = self.translate_va(address, AccessType::Write)?;
 
         if self.is_debug && address == self.riscv_tests_exit_memory_address {
             self.riscv_tests_finished = true;
         }
 
-        if let Some(id) = self.resolve_device_id(address) {
-            self.devices[id].store(address as usize, buf)
-        } else {
-            self.memory.write(address, buf)
-        }
+        self.access_memory_write(pa, buf)
     }
 
     #[inline]
@@ -358,16 +320,18 @@ impl Cpu {
 
     pub fn run(&mut self) {
         loop {
-            eprintln!("[PC]: 0x{:08x}", self.pc);
+            if let Some(e) = self.check_intrrupt_active() {
+                self.handle_trap(e);
+            }
 
             match self.step() {
-                Err(e) => self.handle_trap(e),
+                Err(e) => {
+                    self.handle_trap(e);
+                }
                 Ok(is_jump) => {
                     self.csr.progress_instret();
 
-                    if let Some(e) = self.check_intrrupt_active() {
-                        self.handle_trap(e);
-                    } else if !is_jump {
+                    if !is_jump {
                         // JUMP系の命令でない場合にPCを更新する。
                         self.pc += 4;
                     }
@@ -506,8 +470,9 @@ impl Cpu {
             0b0001111 => {
                 match funct3 {
                     0 => match self.inst {
-                        0x8330000f | 0x0100000f => illegal!(), // FENCE.TSO PAUSE
-                        _ => {}                                // FENCE
+                        0x8330000f => illegal!(), // FENCE.TSO
+                        0x0100000f => {}          // PAUSE Zinhintpause拡張
+                        _ => {}                   // FENCE
                     },
                     1 => {} // FENCE.I
                     _ => unimplemented!(),
@@ -909,7 +874,7 @@ impl Cpu {
                                             return Err(Trap::EnvCallFromSupervisor);
                                         }
                                         Priv::User => return Err(Trap::EnvCallFromUser),
-                                        Priv::Machine => self.handle_sbi(),
+                                        Priv::Machine => return Err(Trap::EnvCallFromMachine),
                                     }
                                 }
                                 0x00100073 => {
@@ -923,12 +888,13 @@ impl Cpu {
                                     {
                                         illegal!()
                                     } else {
-                                        loop {
-                                            panic!("{}", self);
-                                            if self.csr.is_interrupt_active() {
-                                                break;
-                                            }
-                                        }
+                                        //loop {
+                                        //    if self.csr.is_interrupt_active() {
+                                        //        break;
+                                        //    }
+
+                                        //    panic!("{}", self);
+                                        //}
                                     }
                                 }
                                 0x10200073 => {
@@ -985,7 +951,12 @@ impl Cpu {
     //[todo] MMU実装時にself.csr.handle_trapに渡すvaを仮想アドレスを表すものに変更する。
     #[inline]
     pub fn handle_trap(&mut self, e: Trap) {
-        eprintln!("[EXCEPTION]: {:?} at 0x{:08x}", e, self.pc);
+        if e != Trap::SupervisorTimerInterrupt && e != Trap::EnvCallFromSupervisor {
+            eprintln!(
+                "[EXCEPTION]: {:?} inst: 0x{:08x} mstatus: 0x{:08x} at 0x{:08x} in {:?}",
+                e, self.inst, self.csr.mstatus, self.pc, self.prv
+            );
+        }
 
         let (next_pc, next_prv) = match e {
             Trap::UnimplementedCSR | Trap::UnimplementedInstruction => {
@@ -1027,7 +998,7 @@ impl Cpu {
 
     #[inline]
     fn change_priv(&mut self, prv: Priv) {
-        eprintln!("[Change Priv]: from {:?} to {:?}", self.prv, prv);
+        // eprintln!("[Change Priv]: from {:?} to {:?}", self.prv, prv);
         self.prv = prv;
     }
 
@@ -1037,7 +1008,6 @@ impl Cpu {
 
     pub fn load_flat_program<const SIZE: usize>(&mut self, array: &[u8; SIZE], base_addr: u32) {
         self.init();
-        self.set_memory_base_address(base_addr);
         self.load_flat_binary(array, base_addr as usize);
         self.pc = base_addr;
     }

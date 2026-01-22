@@ -4,12 +4,20 @@ use crate::{
     into_addr,
 };
 
-pub const MEMORY_SIZE: usize = 1024 * 1024 * 128;
+pub const MEMORY_SIZE: usize = 1024 * 1024 * 256;
 
-#[derive(Default)]
 pub struct Memory {
     pub array: Vec<u8>,
     pub base_address: u32,
+}
+
+impl Default for Memory {
+    fn default() -> Self {
+        Self {
+            array: vec![0; MEMORY_SIZE],
+            base_address: 0,
+        }
+    }
 }
 
 impl Memory {

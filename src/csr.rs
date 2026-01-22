@@ -17,12 +17,12 @@ const MVENDORID: u32 = 0xf11;
 const MARCHID: u32 = 0xf12;
 const MIMPID: u32 = 0xf13;
 const MEDELEG: u32 = 0x302;
-
-const MEDELEG_SUPPORTED: u32 = 0xcbbff;
-
 const MIDELEG: u32 = 0x303;
 const MIE: u32 = 0x304;
 const MTVEC: u32 = 0x305;
+
+const MEDELEG_SUPPORTED: u32 = 0xcbbff;
+const MIDELEG_SUPPORTED: u32 = IP_SSIP | IP_MSIP | IP_STIP | IP_MTIP | IP_MEIP | IP_SEIP;
 
 const TVEC_MODE: u32 = 0x3;
 
@@ -47,7 +47,7 @@ const MISA_S: u32 = 1 << ('S' as u32 - 'A' as u32);
 
 const MISA_SUPPORTED_VALUE: u32 = MISA_MXL_SUPPORTED | MISA_A | MISA_I | MISA_M | MISA_U | MISA_S;
 
-const MENVCFGH_POS: u64 = 31;
+const MENVCFGH_POS: u64 = 32;
 const MENVCFG_FIOM: u32 = 1;
 const MENVCFG_ADUE: u32 = 1 << 29;
 
@@ -78,6 +78,8 @@ const IP_STIP: u32 = 0x20;
 const IP_MTIP: u32 = 0x80;
 const IP_SEIP: u32 = 0x200;
 const IP_MEIP: u32 = 0x800;
+
+const IP_MSIP_POS: u32 = 3;
 
 const STATUS_SIE_POS: u32 = 1;
 const STATUS_MIE_POS: u32 = 3;
@@ -130,6 +132,9 @@ const STVAL: u32 = 0x143;
 const SIP: u32 = 0x144;
 const SATP: u32 = 0x180;
 const STIMECMP: u32 = 0x14d;
+const STIMECMPH: u32 = 0x15d;
+
+const STIMECMPH_POS: u32 = 32;
 
 const SATP_ASID: u32 = 0x1ff << 22;
 const SATP_PPN: u32 = 0x3fffff;
@@ -138,15 +143,16 @@ const SSTATUS_SUPPORTED: u32 = STATUS_SIE | STATUS_SPIE | STATUS_SPP | STATUS_MX
 const SIE_SUPPORTED: u32 = IE_SSIE | IE_STIE | IE_SEIE;
 
 // Unprivileged
-const CYCLE: u32 = 0xC00;
+const CYCLE: u32 = 0xc00;
 const CYCLEH: u32 = 0xc80;
-const TIME: u32 = 0xC01;
+const TIME: u32 = 0xc01;
+const TIMEH: u32 = 0xc81;
 const INSTRET: u32 = 0xc02;
 const INSTRETH: u32 = 0xc82;
 
-const CYCLEH_POS: u64 = 31;
-const TIMEH_POS: u64 = 31;
-const INSTRETH_POS: u64 = 31;
+const CYCLEH_POS: u64 = 32;
+const TIMEH_POS: u64 = 32;
+const INSTRETH_POS: u64 = 32;
 
 #[derive(Default, Debug)]
 pub struct Csr {
@@ -164,6 +170,7 @@ pub struct Csr {
 
     pub mcounteren: u32,
     pub mcountinhibit: u32,
+    pub mtimecmp: u64,
 
     pub cycle: u64,
     pub instret: u64, // 64bitのinstret 0-31がminstretで32-63がminstreth
@@ -185,8 +192,6 @@ impl Csr {
     #[inline]
     pub fn read(&self, csr: u32, prv: Priv) -> Result<u32> {
         self.check_csr_access(csr, prv, false)?;
-
-        eprintln!("[CSR] read addr: {:08x}", csr);
 
         match csr {
             MHARTID => Ok(0),
@@ -234,6 +239,7 @@ impl Csr {
             SIE => Ok(self.mie & SIE_SUPPORTED),
             SIP => Ok(self.mip & SIE_SUPPORTED),
             STIMECMP => Ok(self.stimecmp as u32),
+            STIMECMPH => Ok((self.stimecmp >> STIMECMPH_POS) as u32),
 
             CYCLE => {
                 self.chceck_cycle_access(prv)?;
@@ -251,6 +257,11 @@ impl Csr {
                 self.chceck_time_access(prv)?;
 
                 Ok(self.time as u32)
+            }
+            TIMEH => {
+                self.chceck_time_access(prv)?;
+
+                Ok((self.time >> TIMEH_POS) as u32)
             }
 
             INSTRET => {
@@ -275,8 +286,6 @@ impl Csr {
     pub fn write(&mut self, csr: u32, value: u32, prv: Priv) -> Result<()> {
         self.check_csr_access(csr, prv, true)?;
 
-        eprintln!("[CSR] write addr: {:08x} value: {:08x}", csr, value);
-
         match csr {
             MISA | MSTATUSH | MHPMCOUNTER3..=MHPMCOUNTER31 | MHPMCOUNTER3H..=MHPMCOUNTER31H => {} // 書き込みは実装しない
             MSTATUS => self.mstatus = value & MSTATUS_SUPPORTED,
@@ -295,7 +304,7 @@ impl Csr {
             }
             MTVAL => self.mtval = value,
             MEDELEG => self.medeleg = value & MEDELEG_SUPPORTED,
-            MIDELEG => self.mideleg = value & MIP_SUPPORTED,
+            MIDELEG => self.mideleg = value & MIDELEG_SUPPORTED,
             MENVCFG => self.menvcfg = (self.menvcfg & 0xffff0000) | (value & MENVCFG_FIOM) as u64,
             MENVCFGH => self.menvcfg = self.menvcfg | ((value & MENVCFG_ADUE) << 31) as u64,
             MINSTRET => {
@@ -344,10 +353,6 @@ impl Csr {
                     eprintln!("[WARNING]: sstatus.MXR is not supported.");
                 }
 
-                if value & STATUS_SUM != 0 {
-                    eprintln!("[WARNING]: sstatus.SUM is not supported.");
-                }
-
                 self.mstatus = (self.mstatus & !SSTATUS_SUPPORTED) | (value & SSTATUS_SUPPORTED);
             }
 
@@ -356,6 +361,53 @@ impl Csr {
             SSCRATCH => self.sscratch = value,
             SIE => self.mie = (self.mie & !SIE_SUPPORTED) | (value & SIE_SUPPORTED),
             SIP => self.mip = (self.mip & !IE_SSIE) | (value & IE_SSIE),
+            STVAL => self.stval = value,
+            SCAUSE => {
+                let is_interrupt = value >> 31 == 1;
+                let cause = (value << 1) >> 1;
+
+                if is_interrupt {
+                    // 割り込み
+                    match cause {
+                        1 | 5 | 9 | 13 => self.scause = value,
+                        _ => {}
+                    }
+                } else {
+                    // 例外
+
+                    match cause {
+                        0..=9 | 12 | 13 | 15 | 18 | 19 => self.scause = value,
+                        _ => {}
+                    }
+                }
+            }
+            STIMECMP => {
+                self.chceck_time_access(prv)?;
+
+                let stimecmp = (self.stimecmp & (0xffffffff << 32)) | (value as u64);
+
+                if stimecmp > self.time {
+                    self.mip = self.mip & !IP_STIP;
+                } else {
+                    self.mip = self.mip | IP_STIP;
+                }
+
+                self.stimecmp = stimecmp;
+            }
+
+            STIMECMPH => {
+                self.chceck_time_access(prv)?;
+
+                let stimecmp = (self.stimecmp & 0xffffffff) | ((value as u64) << STIMECMPH_POS);
+
+                if stimecmp > self.time {
+                    self.mip = self.mip & !IP_STIP;
+                } else {
+                    self.mip = self.mip | IP_STIP;
+                }
+
+                self.stimecmp = stimecmp;
+            }
 
             0x3b0 | 0x7a5 | 0x744 | 0x3a0 => illegal!(), // 未実装CSR
             _ => unimplemented!(),
@@ -442,6 +494,18 @@ impl Csr {
     #[inline]
     pub fn progress_time(&mut self) {
         self.time = self.time.wrapping_add(1);
+
+        if self.time >= self.mtimecmp {
+            self.mip = self.mip | IP_MTIP;
+        } else {
+            self.mip = self.mip & !IP_MTIP;
+        }
+
+        if self.time >= self.stimecmp {
+            self.mip = self.mip | IP_STIP;
+        } else {
+            self.mip = self.mip & !IP_STIP;
+        }
     }
 
     #[inline]
@@ -463,6 +527,42 @@ impl Csr {
     #[inline]
     pub fn get_mstatus_mpp(&self) -> u32 {
         (self.mstatus & STATUS_MPP) >> STATUS_MPP_POS
+    }
+
+    #[inline]
+    pub fn get_mip_msip(&self) -> u32 {
+        (self.mip & IP_MSIP) >> IP_MSIP_POS
+    }
+
+    #[inline]
+    pub fn set_mip_msip(&mut self, msip: u32) {
+        self.mip = self.mip | ((msip & 0x1) << IP_MSIP_POS);
+    }
+
+    #[inline]
+    pub fn set_mtimecmp(&mut self, mtimecmp: u32) {
+        let mtimecmp = (self.mtimecmp & (0xffffffff << 32)) | (mtimecmp as u64);
+
+        if mtimecmp > self.time {
+            self.mip = self.mip & !IP_MTIP;
+        } else {
+            self.mip = self.mip | IP_MTIP;
+        }
+
+        self.mtimecmp = mtimecmp;
+    }
+
+    #[inline]
+    pub fn set_mtimecmph(&mut self, mtimecmph: u32) {
+        let mtimecmp = (self.mtimecmp & 0xffffffff) | ((mtimecmph as u64) << 32);
+
+        if mtimecmp > self.time {
+            self.mip = self.mip & !IP_MTIP;
+        } else {
+            self.mip = self.mip & IP_MTIP;
+        }
+
+        self.mtimecmp = mtimecmp;
     }
 
     // mstatus.TWが有効かどうかを判定する関数
@@ -529,12 +629,11 @@ impl Csr {
                 | (mie << STATUS_MPIE_POS)
                 | ((from_prv as u32) << STATUS_MPP_POS);
 
-            if is_interrupt && self.mtvec & TVEC_MODE != 0 {
-                self.mepc = (va & !0x3) + 4;
+            self.mepc = va & !0x3;
 
+            if is_interrupt && self.mtvec & TVEC_MODE != 0 {
                 ((self.mtvec & !TVEC_MODE) + cause * 4, Priv::Machine)
             } else {
-                self.mepc = va & !0x3;
                 (self.mtvec & !TVEC_MODE, Priv::Machine)
             }
         } else {
@@ -557,12 +656,11 @@ impl Csr {
                 | (0 << STATUS_SIE)
                 | (spp << STATUS_SPP_POS);
 
-            if is_interrupt && self.stvec & TVEC_MODE != 0 {
-                self.sepc = (va & !0x3) + 4;
+            self.sepc = va & !0x3;
 
+            if is_interrupt && self.stvec & TVEC_MODE != 0 {
                 ((self.stvec & !TVEC_MODE) + cause * 4, Priv::Supervisor)
             } else {
-                self.sepc = va & !0x3;
                 (self.stvec & !TVEC_MODE, Priv::Supervisor)
             }
         }
@@ -577,31 +675,37 @@ impl Csr {
     // [todo]: 複数割り込みの順番の実装
     #[inline]
     pub fn resolve_pending(&mut self, from_prv: Priv) -> Option<Trap> {
-        if self.mstatus & STATUS_MIE == 0 {
+        let active_bit = self.mip & self.mie;
+
+        if active_bit == 0 {
             return None;
         }
 
-        let active_bit = if from_prv == Priv::Machine {
-            self.mip & self.mie
-        } else {
-            let active_bit = self.mip & self.mie;
-
-            if active_bit & self.mideleg != 0 {
-                // 委譲が有効の場合
-                if self.mstatus & STATUS_SIE == 0 {
-                    return None;
+        let active_bit = {
+            match from_prv {
+                Priv::Machine => {
+                    if self.mstatus & STATUS_MIE == 0 {
+                        return None;
+                    }
                 }
-
-                active_bit & self.mideleg
-            } else {
-                active_bit
+                Priv::Supervisor => {
+                    if active_bit & self.mideleg != 0 {
+                        // 委譲
+                        if self.mstatus & STATUS_SIE == 0 {
+                            return None;
+                        }
+                    }
+                }
+                Priv::User => {}
             }
+            active_bit
         };
 
         // [todo]: const {}が使えないっぽいのでこうなっているがいい感じにする方法があれば変更する。
         match active_bit {
             0 => None,
             0b10 => return Some(Trap::SupervisorSoftwareInterrupt),
+            0b100000 => return Some(Trap::SupervisorTimerInterrupt),
             _ => panic!("[ERROR]: Unknown or invalid interrupt occured."),
         }
     }

@@ -7,12 +7,13 @@ use tiny_rv32ima_sim::cpu::Cpu;
 
 const FW_SIZE: usize = 1024 * 1024;
 const DTB_SIZE: usize = 64 * 1024;
+const KERNEL_SIZE: usize = 36 * 1024 * 1024;
 
-fn read_file<const SIZE: usize>(filename: &str) -> [u8; SIZE] {
+fn read_file(filename: &str, size: usize) -> Vec<u8> {
     let file = File::open(filename).unwrap();
     let mut reader = BufReader::new(file);
 
-    let mut buf = [0; SIZE];
+    let mut buf = vec![0; size];
     reader.read(&mut buf).unwrap();
 
     buf
@@ -21,11 +22,16 @@ fn read_file<const SIZE: usize>(filename: &str) -> [u8; SIZE] {
 fn main() {
     let mut cpu = Cpu::default();
 
-    let buf: [u8; FW_SIZE] = read_file("firmware/fw_jump.bin");
-    cpu.load_flat_program(&buf, 0x80000000);
+    let buf = read_file("firmware/fw_jump.bin", FW_SIZE);
+    cpu.set_memory_base_address(0x80000000);
 
-    let buf: [u8; DTB_SIZE] = read_file("platform.dtb");
-    cpu.load_flat_binary(&buf, 0x80100000);
+    cpu.load_flat_program::<FW_SIZE>(buf.as_slice().try_into().unwrap(), 0x80000000);
+
+    let buf = read_file("platform.dtb", DTB_SIZE);
+    cpu.load_flat_binary::<DTB_SIZE>(buf.as_slice().try_into().unwrap(), 0x80100000);
+
+    let buf = read_file("Image4", KERNEL_SIZE);
+    cpu.load_flat_binary::<KERNEL_SIZE>(buf.as_slice().try_into().unwrap(), 0x80400000);
 
     cpu.run();
 }
