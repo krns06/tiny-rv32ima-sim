@@ -80,6 +80,8 @@ const IP_SEIP: u32 = 0x200;
 const IP_MEIP: u32 = 0x800;
 
 const IP_MSIP_POS: u32 = 3;
+const IP_MEIP_POS: u32 = 11;
+const IP_SEIP_POS: u32 = 9;
 
 const STATUS_SIE_POS: u32 = 1;
 const STATUS_MIE_POS: u32 = 3;
@@ -350,7 +352,7 @@ impl Csr {
                 }
 
                 if value & STATUS_MXR != 0 {
-                    eprintln!("[WARNING]: sstatus.MXR is not supported.");
+                    panic!("[WARNING]: sstatus.MXR is not supported.");
                 }
 
                 self.mstatus = (self.mstatus & !SSTATUS_SUPPORTED) | (value & SSTATUS_SUPPORTED);
@@ -536,7 +538,17 @@ impl Csr {
 
     #[inline]
     pub fn set_mip_msip(&mut self, msip: u32) {
-        self.mip = self.mip | ((msip & 0x1) << IP_MSIP_POS);
+        self.mip = (self.mip & !IP_MSIP) | ((msip & 0x1) << IP_MSIP_POS);
+    }
+
+    #[inline]
+    pub fn set_mip_meip(&mut self, meip: u32) {
+        self.mip = (self.mip & !IP_MEIP) | ((meip & 0x1) << IP_MEIP_POS);
+    }
+
+    #[inline]
+    pub fn set_mip_seip(&mut self, seip: u32) {
+        self.mip = (self.mip & !IP_SEIP) | ((seip & 0x1) << IP_SEIP_POS);
     }
 
     #[inline]
@@ -596,6 +608,11 @@ impl Csr {
     #[inline]
     pub fn is_paging_enabled(&self) -> bool {
         self.satp >> 31 == 1
+    }
+
+    #[inline]
+    pub fn is_svadu_enabled(&self) -> bool {
+        (self.menvcfg >> MENVCFGH_POS) & MENVCFG_ADUE as u64 == 0
     }
 
     // トラップを処理する関数
@@ -666,10 +683,25 @@ impl Csr {
         }
     }
 
-    // 委譲や{M,S}IEをきにせず割り込みが起こっているかどうかを判定する関数
     #[inline]
-    pub fn is_interrupt_active(&self) -> bool {
-        self.mie & self.mip != 0
+    pub fn can_external_interrupt(&self, from_prv: Priv) -> bool {
+        match from_prv {
+            Priv::Machine => {
+                if self.mstatus & STATUS_MIE == 0 {
+                    return false;
+                }
+            }
+            Priv::Supervisor => {
+                if self.mideleg & IP_SEIP != 0 {
+                    if self.mstatus & STATUS_SIE == 0 {
+                        return false;
+                    }
+                }
+            }
+            Priv::User => {}
+        }
+
+        true
     }
 
     // [todo]: 複数割り込みの順番の実装
@@ -701,13 +733,26 @@ impl Csr {
             active_bit
         };
 
-        // [todo]: const {}が使えないっぽいのでこうなっているがいい感じにする方法があれば変更する。
-        match active_bit {
-            0 => None,
-            0b10 => return Some(Trap::SupervisorSoftwareInterrupt),
-            0b100000 => return Some(Trap::SupervisorTimerInterrupt),
-            _ => panic!("[ERROR]: Unknown or invalid interrupt occured."),
+        if active_bit == 0 {
+            return None;
         }
+
+        if active_bit & 0x200 != 0 {
+            return Some(Trap::SupervisorExternalInterrupt);
+        }
+
+        if active_bit & 0x2 != 0 {
+            return Some(Trap::SupervisorSoftwareInterrupt);
+        }
+
+        if active_bit & 0x20 != 0 {
+            return Some(Trap::SupervisorTimerInterrupt);
+        }
+
+        panic!(
+            "[ERROR]: Unknown or invalid interrupt({}) occured.",
+            active_bit
+        );
     }
 
     // mrmetのCSRでの処理を行う関数

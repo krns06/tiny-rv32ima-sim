@@ -5,7 +5,9 @@ mod csr;
 mod elf;
 mod memory;
 mod mmio;
+mod plic;
 mod sbi;
+mod uart;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AccessType {
@@ -84,6 +86,7 @@ pub enum Trap {
 
     SupervisorSoftwareInterrupt = 1 << 31 | 1,
     SupervisorTimerInterrupt = 1 << 31 | 5,
+    SupervisorExternalInterrupt = 1 << 31 | 9,
 
     UnimplementedInstruction, // デバッグ用
     UnimplementedCSR,         // デバッグ用
@@ -100,6 +103,22 @@ impl Trap {
 
     pub fn cause(&self) -> u32 {
         (*self as u32) & !(1 << 31)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IRQ {
+    None = 0,
+    UART = 0xa,
+}
+
+impl From<usize> for IRQ {
+    fn from(value: usize) -> Self {
+        match value {
+            0 => Self::None,
+            0xa => Self::UART,
+            _ => unreachable!(),
+        }
     }
 }
 

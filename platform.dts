@@ -4,8 +4,14 @@
   #address-cells = <1>;
   #size-cells = <1>;
 
+    aliases {
+      serial0 = "/soc/serial@10000000";
+    };
+
     chosen {
-      bootargs = "earlycon=uart8250,mmio,0x10000000 console=ttyS0 ";
+      bootargs = "earlycon=uart8250,mmio,0x10000000 console=ttyS0 rw init=/init";
+      // bootargs = "earlycon=sbi";
+		  stdout-path = "/soc/serial@10000000";
       opensbi-config {
         compatible = "opensbi,config";
         stdout-path = "/soc/serial@10000000";
@@ -66,7 +72,21 @@
       
       uart0: serial@10000000 {
         compatible = "ns16550a";
+        interrupts = <0x0a>;
+        interrupt-parent = <0x03>;
         reg = <0x10000000 0x100>;
+			  clock-frequency = "", "8@";
       };
+
+		  plic@c000000 {
+		  	phandle = <0x03>;
+		  	riscv,ndev = <0x1f>;
+		  	reg = <0xc000000 0x4000000>;
+        interrupts-extended = <&cpu0_int 11 &cpu0_int 9>;
+		  	interrupt-controller;
+		  	compatible = "riscv,plic0";
+		  	#address-cells = <0x00>;
+		  	#interrupt-cells = <0x01>;
+		  };
     };
 };

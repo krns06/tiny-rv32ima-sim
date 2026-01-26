@@ -4,7 +4,7 @@ use crate::{
     into_addr,
 };
 
-pub const MEMORY_SIZE: usize = 1024 * 1024 * 256;
+pub const MEMORY_SIZE: usize = 1024 * 1024 * 512;
 
 pub struct Memory {
     pub array: Vec<u8>,

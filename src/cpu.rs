@@ -1,6 +1,9 @@
 use std::fmt::Display;
 
-use crate::{AccessType, Device, Priv, Result, Trap, csr::Csr, illegal, into_addr, memory::Memory};
+use crate::{
+    AccessType, Device, IRQ, Priv, Result, Trap, csr::Csr, illegal, into_addr, memory::Memory,
+    plic::Plic, uart::Uart,
+};
 
 const PTE_V: u32 = 1;
 const PTE_R: u32 = 1 << 1;
@@ -74,15 +77,19 @@ impl Registers {
 
 #[derive(Default)]
 pub struct Cpu {
-    prv: Priv, // privは予約済みらしい
+    pub(crate) prv: Priv, // privは予約済みらしい
     regs: Registers,
     pc: u32, // 当面はVirtual Address想定
 
     // 現在実行中の命令列
     inst: u32,
 
-    pub(crate) memory: Memory,
     pub(crate) csr: Csr,
+
+    //[todo]: Busにまとめる
+    pub(crate) memory: Memory,
+    pub(crate) plic: Plic,
+    pub(crate) uart: Uart,
 
     reserved_address: Option<u32>, // For LR.W or SC.W
     fault_address: Option<u32>,
@@ -166,26 +173,17 @@ impl Cpu {
             return Ok(va);
         }
 
+        //[todo] 権限元を使用し、チェック
+
         let mut local_prv = self.prv;
 
+        if self.csr.is_enabled_mstatus_mprv() && (access_type.is_read() || access_type.is_write()) {
+            let mpp_prv = self.csr.get_mstatus_mpp().into();
+            local_prv = mpp_prv;
+        }
+
         if local_prv == Priv::Machine {
-            let is_enabled_mprv = (access_type.is_read() || access_type.is_write())
-                && self.csr.is_enabled_mstatus_mprv();
-
-            if is_enabled_mprv {
-                // MPRVが有効の場合はアドレス変換時はMPPの値を権限に設定する。
-
-                let mpp_prv = self.csr.get_mstatus_mpp().into();
-
-                if mpp_prv == Priv::Machine {
-                    // もしmstatus.MPRV=1でもMPPがMPPモードの場合はアドレスの変換はしない。
-                    return Ok(va);
-                }
-
-                local_prv = mpp_prv;
-            } else {
-                return Ok(va);
-            }
+            return Ok(va);
         }
 
         macro_rules! fault {
@@ -231,7 +229,6 @@ impl Cpu {
                     || (x == access_type as u32)
                 {
                     // 権限の確認
-                    //[todo] SUMとかMXRについての判定もここで行う。
 
                     if i > 0 && pte & (0x3ff << 10) != 0 {
                         // superpageのエラー
@@ -243,6 +240,7 @@ impl Cpu {
                     if (u == 0 && local_prv == Priv::User)
                         || (u != 0
                             && local_prv == Priv::Supervisor
+                            && (r != 0 || w != 0)
                             && !self.csr.is_enabled_mstatus_sum())
                     {
                         // U=0かつ権限がUモードの場合と
@@ -256,10 +254,13 @@ impl Cpu {
                     let is_write = access_type.is_write();
 
                     if a == 0 || (is_write && d == 0) {
-                        //[todo] Svadeを将来的に実装する
                         //自動更新の方ではテストが通らなさそう。
 
-                        fault!();
+                        if self.csr.is_svadu_enabled() {
+                            fault!();
+                        } else {
+                            todo!();
+                        }
                     }
 
                     last = Some(i);
@@ -319,13 +320,44 @@ impl Cpu {
     }
 
     pub fn run(&mut self) {
+        let command = "ls\ncat /proc/cpuinfo\n"
+            .chars()
+            .into_iter()
+            .collect::<Vec<char>>();
+        let mut idx = 0;
+
+        let mut flag = false;
+
         loop {
-            if let Some(e) = self.check_intrrupt_active() {
+            if !flag && self.csr.time >= 0x001ee11c {
+                if self.uart.iir == 1 && self.plic.pending[0] == 0 && self.uart.ier & 0x4 != 0 {
+                    if self.prv == Priv::User {
+                        self.uart.push_char(command[idx]);
+                        self.csr.set_mip_seip(1);
+
+                        idx += 1;
+
+                        if idx >= command.len() {
+                            self.csr.set_mip_seip(0);
+                            flag = true;
+                        }
+                    }
+                }
+            }
+
+            if self.check_external_interrupt_active() {
+                self.raise_external_interrupt();
+            }
+
+            if let Some(e) = self.check_local_intrrupt_active() {
                 self.handle_trap(e);
             }
 
             match self.step() {
                 Err(e) => {
+                    //if self.pc == 0x001d2fd0 {
+                    //    panic!("{}", self)
+                    //}
                     self.handle_trap(e);
                 }
                 Ok(is_jump) => {
@@ -354,14 +386,12 @@ impl Cpu {
                 break;
             }
 
-            eprintln!("[PC]: 0x{:08x}", self.pc);
-
             match self.step() {
                 Err(e) => self.handle_trap(e),
                 Ok(is_jump) => {
                     self.csr.progress_instret();
 
-                    if let Some(e) = self.check_intrrupt_active() {
+                    if let Some(e) = self.check_local_intrrupt_active() {
                         self.handle_trap(e);
                     } else if !is_jump {
                         // JUMP系の命令でない場合にPCを更新する。
@@ -873,7 +903,9 @@ impl Cpu {
                                         Priv::Supervisor => {
                                             return Err(Trap::EnvCallFromSupervisor);
                                         }
-                                        Priv::User => return Err(Trap::EnvCallFromUser),
+                                        Priv::User => {
+                                            return Err(Trap::EnvCallFromUser);
+                                        }
                                         Priv::Machine => return Err(Trap::EnvCallFromMachine),
                                     }
                                 }
@@ -951,12 +983,9 @@ impl Cpu {
     //[todo] MMU実装時にself.csr.handle_trapに渡すvaを仮想アドレスを表すものに変更する。
     #[inline]
     pub fn handle_trap(&mut self, e: Trap) {
-        if e != Trap::SupervisorTimerInterrupt && e != Trap::EnvCallFromSupervisor {
-            eprintln!(
-                "[EXCEPTION]: {:?} inst: 0x{:08x} mstatus: 0x{:08x} at 0x{:08x} in {:?}",
-                e, self.inst, self.csr.mstatus, self.pc, self.prv
-            );
-        }
+        let pc = self.pc;
+        let a7 = self.regs.regs[17];
+        let from_prv = self.prv;
 
         let (next_pc, next_prv) = match e {
             Trap::UnimplementedCSR | Trap::UnimplementedInstruction => {
@@ -972,18 +1001,48 @@ impl Cpu {
                 self.csr.handle_trap(self.prv, e, self.pc, fault_address)
             }
             Trap::IlligalInstruction => self.csr.handle_trap(self.prv, e, self.pc, self.inst),
-            _ => self.csr.handle_trap(self.prv, e, self.pc, self.pc),
+            Trap::SupervisorExternalInterrupt => {
+                self.prepare_external_interrupt_trap();
+                self.csr.handle_trap(self.prv, e, self.pc, 0)
+            }
+            _ => self.csr.handle_trap(self.prv, e, self.pc, 0),
         };
 
         self.pc = next_pc;
         self.change_priv(next_prv);
+
+        //    if self.csr.time == 0x0d5e517f {
+        //        panic!("break");
+        //    }
+        //}
+    }
+
+    #[inline]
+    pub fn raise_external_interrupt(&mut self) {
+        self.raise_plic_interrupt();
+    }
+
+    #[inline]
+    pub fn prepare_external_interrupt_trap(&mut self) {
+        self.prepare_plic_interrupt_trap();
     }
 
     // 割り込みが起こっているか確認する関数
     // 起こっている場合は割り込みに対応するExceptionを返す。
     #[inline]
-    pub fn check_intrrupt_active(&mut self) -> Option<Trap> {
+    pub fn check_local_intrrupt_active(&mut self) -> Option<Trap> {
         self.csr.resolve_pending(self.prv)
+    }
+
+    #[inline]
+    pub fn check_external_interrupt_active(&mut self) -> bool {
+        if self.csr.can_external_interrupt(self.prv) {
+            if self.uart.is_interrupting() {
+                self.raise_irq(IRQ::UART);
+                return true;
+            }
+        }
+        false
     }
 
     #[inline]
@@ -998,7 +1057,6 @@ impl Cpu {
 
     #[inline]
     fn change_priv(&mut self, prv: Priv) {
-        // eprintln!("[Change Priv]: from {:?} to {:?}", self.prv, prv);
         self.prv = prv;
     }
 
@@ -1016,5 +1074,14 @@ impl Cpu {
         self.init();
         let entry_point = self.memory.load_elf_binary(array);
         self.pc = entry_point;
+    }
+
+    pub fn run_command(&mut self) {
+        let command = "ls\n";
+
+        for c in command.chars() {
+            self.uart.push_char(c);
+            self.csr.set_mip_seip(1);
+        }
     }
 }

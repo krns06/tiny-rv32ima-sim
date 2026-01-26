@@ -1,34 +1,47 @@
-use std::io::Write;
+use crate::{Priv, Result, Trap, cpu::Cpu};
 
-use crate::{Result, Trap, cpu::Cpu};
+const CLINT_BASE: u32 = 0x2000000;
+const CLINT_END: u32 = CLINT_BASE + 0x10000;
+
+const PLIC_BASE: u32 = 0xc000000;
+const PLIC_END: u32 = PLIC_BASE + 0x4000000;
+
+const UART_BASE: u32 = 0x10000000;
+const UART_END: u32 = UART_BASE + 0x100;
+
+const MEMORY_BASE: u32 = 0x80000000;
+const MEMORY_END: u32 = 0x90000000;
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum MemoryTarget {
-    Memory,
-    Uart,
-    Clint,
+    MEMORY,
+    UART,
+    CLINT,
+    PLIC,
 }
 
 impl Cpu {
     #[inline]
     pub fn resovle_region(&self, pa: u32) -> Option<MemoryTarget> {
         match pa {
-            0x2000000..=0x2010000 => Some(MemoryTarget::Clint),
-            0x10000000..=0x10000100 => Some(MemoryTarget::Uart),
-            0x80000000..=0x90000000 => Some(MemoryTarget::Memory),
+            CLINT_BASE..CLINT_END => Some(MemoryTarget::CLINT),
+            PLIC_BASE..PLIC_END => Some(MemoryTarget::PLIC),
+            UART_BASE..UART_END => Some(MemoryTarget::UART),
+            MEMORY_BASE..=MEMORY_END => Some(MemoryTarget::MEMORY),
             _ => None,
         }
     }
 
     #[inline]
-    pub fn access_memory_read<const SIZE: usize>(&self, pa: u32) -> Result<[u8; SIZE]> {
+    pub fn access_memory_read<const SIZE: usize>(&mut self, pa: u32) -> Result<[u8; SIZE]> {
         if let Some(target) = self.resovle_region(pa) {
-            if target == MemoryTarget::Memory {
+            if target == MemoryTarget::MEMORY {
                 self.memory.read(pa)
             } else {
                 let value = match target {
-                    MemoryTarget::Uart => self.handle_uart_read(pa),
-                    MemoryTarget::Clint => self.handle_clint_read(pa),
+                    MemoryTarget::UART => self.handle_uart_read(pa - UART_BASE),
+                    MemoryTarget::CLINT => self.handle_clint_read(pa - CLINT_BASE),
+                    MemoryTarget::PLIC => self.handle_plic_read(pa - PLIC_BASE),
                     _ => unreachable!(),
                 }?;
 
@@ -55,41 +68,18 @@ impl Cpu {
             let value = u32::from_le_bytes(t);
 
             match target {
-                MemoryTarget::Uart => self.handle_uart_write(pa, value),
-                MemoryTarget::Clint => self.handle_clint_write(pa, value),
-                MemoryTarget::Memory => self.memory.write(pa, buf),
+                MemoryTarget::UART => self.handle_uart_write(pa - UART_BASE, value),
+                MemoryTarget::CLINT => self.handle_clint_write(pa - CLINT_BASE, value),
+                MemoryTarget::PLIC => self.handle_plic_write(pa - PLIC_BASE, value),
+                MemoryTarget::MEMORY => self.memory.write(pa, buf),
             }
         } else {
             Err(Trap::StoreOrAMOAccessFault)
         }
     }
 
-    fn handle_uart_read(&self, address: u32) -> Result<u32> {
-        let offset = address & 0xFF;
-
-        if offset == 5 {
-            return Ok(0x60);
-        }
-
-        Ok(0)
-    }
-
     #[inline]
-    fn handle_uart_write(&self, address: u32, value: u32) -> Result<()> {
-        let offset = address & 0xFF;
-
-        if offset == 0 {
-            let c = value as u8;
-            print!("{}", c as char);
-        }
-
-        Ok(())
-    }
-
-    #[inline]
-    fn handle_clint_read(&self, pa: u32) -> Result<u32> {
-        let offset = pa - 0x2000000;
-
+    fn handle_clint_read(&self, offset: u32) -> Result<u32> {
         match offset {
             0 => Ok(self.csr.get_mip_msip()),
             _ => Err(Trap::LoadAccessFault),
@@ -97,9 +87,7 @@ impl Cpu {
     }
 
     #[inline]
-    fn handle_clint_write(&mut self, pa: u32, value: u32) -> Result<()> {
-        let offset = pa - 0x2000000;
-
+    fn handle_clint_write(&mut self, offset: u32, value: u32) -> Result<()> {
         match offset {
             0 => {
                 // msip
