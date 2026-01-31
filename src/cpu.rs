@@ -1,11 +1,10 @@
 use std::fmt::Display;
 
 use crate::{
-    AccessType, Priv, Result, Trap,
+    AccessType, IRQ, Priv, Result, Trap,
+    bus::{Bus, CpuContext},
     csr::Csr,
-    elf::{Elf32Ehdr, Elf32Phdr},
-    illegal, into_addr,
-    memory::{MEMORY_SIZE, Memory},
+    illegal,
 };
 
 const PTE_V: u32 = 1;
@@ -19,6 +18,8 @@ const PTESIZE: u32 = 4;
 
 const PAGESIZE: u32 = 4096;
 
+const DTB_ADDR: u32 = 0x80100000;
+
 // デバッグ用マクロ
 macro_rules! unimplemented {
     () => {
@@ -27,9 +28,19 @@ macro_rules! unimplemented {
 }
 
 // read/write関数以外では操作してはいけない。
-#[derive(Default)]
+#[derive(Debug)]
 pub struct Registers {
     regs: [u32; 32],
+}
+
+impl Default for Registers {
+    fn default() -> Self {
+        let mut regs = [0; 32];
+
+        regs[11] = DTB_ADDR; // dtbはここに置いておく
+
+        Self { regs }
+    }
 }
 
 impl Display for Registers {
@@ -44,7 +55,7 @@ impl Display for Registers {
 
 impl Registers {
     pub fn init(&mut self) {
-        self.regs.fill(0);
+        *self = Self::default();
     }
 
     #[inline]
@@ -66,22 +77,23 @@ impl Registers {
     }
 }
 
+#[derive(Default)]
 pub struct Cpu {
-    prv: Priv, // privは予約済みらしい
+    pub(crate) prv: Priv, // privは予約済みらしい
     regs: Registers,
     pc: u32, // 当面はVirtual Address想定
 
     // 現在実行中の命令列
     inst: u32,
 
-    memory: Memory,
     csr: Csr,
 
-    reserved_address: Option<u32>, // For LR.W or SC.W
-    fault_address: Option<u32>,
+    bus: Bus,
 
-    is_debug: bool,
-    riscv_tests_exit_memory_address: u32,
+    reserved_addr: Option<u32>, // For LR.W or SC.W
+    fault_addr: Option<u32>,
+
+    riscv_tests_exit_memory_addr: u32,
     riscv_tests_finished: bool,
 }
 
@@ -111,55 +123,25 @@ impl Display for Cpu {
 
         f.write_str(&format!("{:x?}\n", self.csr))?;
 
-        if self.is_debug {
-            f.write_str(&format!(
-                "[riscv_tests_value]: 0x{:08x}\n",
-                u32::from_le_bytes(
-                    self.memory
-                        .raw_read(into_addr(self.riscv_tests_exit_memory_address))
-                )
-            ))?;
-        }
-
         f.write_str("---------- DUMP END ----------\n")
     }
 }
 
 impl Cpu {
-    pub fn new() -> Self {
-        Self {
-            prv: Priv::Machine,
-            regs: Registers::default(),
-            pc: 0,
-            inst: 0,
-            memory: Memory::new(),
-            csr: Csr::default(),
-            reserved_address: None,
-            fault_address: None,
-            is_debug: false,
-            riscv_tests_exit_memory_address: 0,
-            riscv_tests_finished: false,
-        }
-    }
-
     pub fn init(&mut self) {
         self.prv = Priv::Machine;
         self.pc = 0;
         self.inst = 0;
         self.csr = Csr::default();
 
-        self.reserved_address = None;
-        self.fault_address = None;
+        self.reserved_addr = None;
+        self.fault_addr = None;
 
-        self.riscv_tests_exit_memory_address = 0;
+        self.riscv_tests_exit_memory_addr = 0;
         self.riscv_tests_finished = false;
 
         self.regs.init();
-        self.memory.init();
-    }
-
-    pub fn set_memory_base_address(&mut self, address: u32) {
-        self.memory.base_address = address;
+        self.bus = Bus::default();
     }
 
     fn read_reg(&self, reg: u32) -> u32 {
@@ -175,36 +157,27 @@ impl Cpu {
             return Ok(va);
         }
 
+        //[todo] 権限元を使用し、チェック
+
         let mut local_prv = self.prv;
 
+        if self.csr.is_enabled_mstatus_mprv() && (access_type.is_read() || access_type.is_write()) {
+            let mpp_prv = self.csr.get_mstatus_mpp().into();
+            local_prv = mpp_prv;
+        }
+
         if local_prv == Priv::Machine {
-            let is_enabled_mprv = (access_type.is_read() || access_type.is_write())
-                && self.csr.is_enabled_mstatus_mprv();
-
-            if is_enabled_mprv {
-                // MPRVが有効の場合はアドレス変換時はMPPの値を権限に設定する。
-
-                let mpp_prv = self.csr.get_mstatus_mpp().into();
-
-                if mpp_prv == Priv::Machine {
-                    // もしmstatus.MPRV=1でもMPPがMPPモードの場合はアドレスの変換はしない。
-                    return Ok(va);
-                }
-
-                local_prv = mpp_prv;
-            } else {
-                return Ok(va);
-            }
+            return Ok(va);
         }
 
         macro_rules! fault {
             ($e:expr) => {{
-                self.fault_address = Some(va);
+                self.fault_addr = Some(va);
 
                 return Err($e);
             }};
             () => {
-                fault!(access_type.into());
+                fault!(access_type.into_trap(true));
             };
         }
 
@@ -218,10 +191,14 @@ impl Cpu {
             let vpn = (vpns >> (10 * i)) & 0x3ff;
             let pte_addr = addr + vpn * PTESIZE;
 
-            pte = match self.memory.read_for_translation(pte_addr, access_type) {
-                Ok(buf) => u32::from_le_bytes(buf),
-                Err(e) => fault!(e),
-            };
+            pte = self.bus.read_u32(
+                pte_addr,
+                crate::bus::CpuContext {
+                    csr: &mut self.csr,
+                    is_walk: true,
+                    access_type: AccessType::Read,
+                },
+            )?;
 
             let v = pte & PTE_V;
             let r = pte & PTE_R;
@@ -240,7 +217,6 @@ impl Cpu {
                     || (x == access_type as u32)
                 {
                     // 権限の確認
-                    //[todo] SUMとかMXRについての判定もここで行う。
 
                     if i > 0 && pte & (0x3ff << 10) != 0 {
                         // superpageのエラー
@@ -252,6 +228,7 @@ impl Cpu {
                     if (u == 0 && local_prv == Priv::User)
                         || (u != 0
                             && local_prv == Priv::Supervisor
+                            && (r != 0 || w != 0)
                             && !self.csr.is_enabled_mstatus_sum())
                     {
                         // U=0かつ権限がUモードの場合と
@@ -265,10 +242,13 @@ impl Cpu {
                     let is_write = access_type.is_write();
 
                     if a == 0 || (is_write && d == 0) {
-                        //[todo] Svadeを将来的に実装する
                         //自動更新の方ではテストが通らなさそう。
 
-                        fault!();
+                        if self.csr.is_svadu_enabled() {
+                            fault!();
+                        } else {
+                            todo!();
+                        }
                     }
 
                     last = Some(i);
@@ -293,28 +273,85 @@ impl Cpu {
         }
     }
 
-    // memory読み込みのラッパー関数
-    // 将来的にはVirtual Adressとかその他の例外を実装するためにこのようにする。
     #[inline]
-    pub fn read_memory<const SIZE: usize>(&mut self, address: u32) -> Result<[u8; SIZE]> {
-        let address = self.translate_va(address, AccessType::Read)?;
+    pub fn read_memory_u8(&mut self, addr: u32) -> Result<u8> {
+        let access_type = AccessType::Read;
+        let pa = self.translate_va(addr, access_type)?;
+        let ctx = CpuContext {
+            csr: &mut self.csr,
+            is_walk: false,
+            access_type,
+        };
 
-        self.memory.read(address)
+        self.bus.read_u8(pa, ctx)
     }
 
     #[inline]
-    pub fn write_memory<const SIZE: usize>(
-        &mut self,
-        address: u32,
-        buf: &[u8; SIZE],
-    ) -> Result<()> {
-        let address = self.translate_va(address, AccessType::Write)?;
+    pub fn read_memory_u16(&mut self, addr: u32) -> Result<u16> {
+        let access_type = AccessType::Read;
+        let pa = self.translate_va(addr, access_type)?;
+        let ctx = CpuContext {
+            csr: &mut self.csr,
+            is_walk: false,
+            access_type,
+        };
 
-        if address == self.riscv_tests_exit_memory_address {
-            self.riscv_tests_finished = true;
-        }
+        self.bus.read_u16(pa, ctx)
+    }
 
-        self.memory.write(address, buf)
+    #[inline]
+    pub fn read_memory_u32(&mut self, addr: u32) -> Result<u32> {
+        let access_type = AccessType::Read;
+        let pa = self.translate_va(addr, access_type)?;
+        let ctx = CpuContext {
+            csr: &mut self.csr,
+            is_walk: false,
+            access_type,
+        };
+
+        self.bus.read_u32(pa, ctx)
+    }
+
+    #[inline]
+    pub fn write_memory_u8(&mut self, addr: u32, value: u8) -> Result<()> {
+        let access_type = AccessType::Write;
+
+        let pa = self.translate_va(addr, access_type)?;
+        let ctx = CpuContext {
+            csr: &mut self.csr,
+            is_walk: false,
+            access_type,
+        };
+
+        self.bus.write_u8(pa, value, ctx)
+    }
+
+    #[inline]
+    pub fn write_memory_u16(&mut self, addr: u32, value: u16) -> Result<()> {
+        let access_type = AccessType::Write;
+
+        let pa = self.translate_va(addr, access_type)?;
+        let ctx = CpuContext {
+            csr: &mut self.csr,
+            is_walk: false,
+            access_type,
+        };
+
+        self.bus.write_u16(pa, value, ctx)
+    }
+
+    #[inline]
+    pub fn write_memory_u32(&mut self, addr: u32, value: u32) -> Result<()> {
+        let access_type = AccessType::Write;
+
+        let pa = self.translate_va(addr, access_type)?;
+        let ctx = CpuContext {
+            csr: &mut self.csr,
+            is_walk: false,
+            access_type,
+        };
+
+        self.bus.write_u32(pa, value, ctx)
     }
 
     #[inline]
@@ -327,29 +364,51 @@ impl Cpu {
         self.csr.write(csr, value, self.prv)
     }
 
-    pub fn run(&mut self) {}
+    pub fn run(&mut self) {
+        let command = "dmesg\ntop\n".chars().into_iter().collect::<Vec<char>>();
+        let mut idx = 0;
 
-    // riscv-testsが通るか検証する関数
-    // true: 成功 false: 失敗
-    pub fn debug_run(&mut self, riscv_tests_exit_memory_address: u32) -> bool {
-        self.is_debug = true;
-        self.riscv_tests_exit_memory_address = riscv_tests_exit_memory_address;
+        let mut flag = false;
 
         loop {
-            if self.riscv_tests_finished {
-                break;
+            if !flag && self.csr.time >= 0x001ee11c {
+                let is_pending = self.bus.plic().pending()[0] == 0;
+                let uart = self.bus.uart();
+
+                if is_pending && uart.is_ready_for_recieving() {
+                    if self.prv == Priv::User {
+                        uart.push_char(command[idx]);
+                        self.csr.set_mip_seip(1);
+
+                        idx += 1;
+
+                        if idx >= command.len() {
+                            self.csr.set_mip_seip(0);
+                            flag = true;
+                        }
+                    }
+                }
             }
 
-            println!("[PC]: 0x{:08x}", self.pc);
+            if self.check_external_interrupt_active() {
+                self.raise_external_interrupt();
+            }
+
+            if let Some(e) = self.check_local_intrrupt_active() {
+                self.handle_trap(e);
+            }
 
             match self.step() {
-                Err(e) => self.handle_trap(e),
+                Err(e) => {
+                    //if self.pc == 0x001d2fd0 {
+                    //    panic!("{}", self)
+                    //}
+                    self.handle_trap(e);
+                }
                 Ok(is_jump) => {
                     self.csr.progress_instret();
 
-                    if let Some(e) = self.check_intrrupt_active() {
-                        self.handle_trap(e);
-                    } else if !is_jump {
+                    if !is_jump {
                         // JUMP系の命令でない場合にPCを更新する。
                         self.pc += 4;
                     }
@@ -357,18 +416,8 @@ impl Cpu {
             }
 
             self.csr.progress_cycle();
+            self.csr.progress_time();
         }
-
-        let address = self.riscv_tests_exit_memory_address;
-        let bytes = self.memory.raw_read(into_addr(address));
-
-        let flag = bytes == [1, 0, 0, 0];
-
-        if !flag {
-            println!("{}", self);
-        }
-
-        flag
     }
 
     // jump命令: Ok(true) 他の命令: Ok(false)
@@ -403,60 +452,43 @@ impl Cpu {
         match opcode {
             0b0000011 => {
                 let imm = ((self.inst as i32) >> 20) as u32;
+                let addr = reg!(rs1).wrapping_add(imm);
 
-                match funct3 {
+                let value = match funct3 {
                     //[todo] refactor
                     0b000 => {
                         // LB
-
-                        let byte = self.read_memory(reg!(rs1).wrapping_add(imm))?;
-
-                        let value = u8::from_le_bytes(byte) as u32;
-                        let value = (((value << 24) as i32) >> 24) as u32;
-
-                        reg!(rd, value);
+                        let value = self.read_memory_u8(addr)? as u32;
+                        (((value << 24) as i32) >> 24) as u32
                     }
                     0b001 => {
                         // LH
-                        let byte = self.read_memory(reg!(rs1).wrapping_add(imm))?;
-
-                        let value = u16::from_le_bytes(byte) as u32;
-                        let value = (((value << 16) as i32) >> 16) as u32;
-
-                        reg!(rd, value);
+                        let value = self.read_memory_u16(addr)? as u32;
+                        (((value << 16) as i32) >> 16) as u32
                     }
                     0b010 => {
                         // LW
-                        let bytes = self.read_memory(reg!(rs1).wrapping_add(imm))?;
-
-                        let value = u32::from_le_bytes(bytes) as u32;
-
-                        reg!(rd, value);
+                        self.read_memory_u32(addr)?
                     }
                     0b100 => {
                         // LBU
-                        let byte = self.read_memory(reg!(rs1).wrapping_add(imm))?;
-
-                        let value = u8::from_le_bytes(byte) as u32;
-
-                        reg!(rd, value);
+                        self.read_memory_u8(addr)? as u32
                     }
                     0b101 => {
                         // LHU
-                        let byte = self.read_memory(reg!(rs1).wrapping_add(imm))?;
-
-                        let value = u16::from_le_bytes(byte) as u32;
-
-                        reg!(rd, value);
+                        self.read_memory_u16(addr)? as u32
                     }
                     _ => unimplemented!(),
-                }
+                };
+
+                reg!(rd, value);
             }
             0b0001111 => {
                 match funct3 {
                     0 => match self.inst {
-                        0x8330000f | 0x0100000f => illegal!(), // FENCE.TSO PAUSE
-                        _ => {}                                // FENCE
+                        0x8330000f => illegal!(), // FENCE.TSO
+                        0x0100000f => {}          // PAUSE Zinhintpause拡張
+                        _ => {}                   // FENCE
                     },
                     1 => {} // FENCE.I
                     _ => unimplemented!(),
@@ -520,27 +552,27 @@ impl Cpu {
             0b0100011 => {
                 let imm = ((self.inst >> (25 - 5)) & 0xfe0) | ((self.inst >> 7) & 0x1f);
                 let imm = (((imm << 20) as i32) >> 20) as u32;
-                let address = reg!(rs1).wrapping_add(imm);
+                let addr = reg!(rs1).wrapping_add(imm);
 
                 match funct3 {
                     //[todo] refactor
                     0b000 => {
                         //SB
-                        let bytes = (reg!(rs2) as u8).to_le_bytes();
+                        let value = reg!(rs2) as u8;
 
-                        self.write_memory(address, &bytes)?;
+                        self.write_memory_u8(addr, value)?;
                     }
                     0b001 => {
                         // SH
-                        let bytes = (reg!(rs2) as u16).to_le_bytes();
+                        let value = reg!(rs2) as u16;
 
-                        self.write_memory(address, &bytes)?;
+                        self.write_memory_u16(addr, value)?;
                     }
                     0b010 => {
                         // SW
-                        let bytes = reg!(rs2).to_le_bytes();
+                        let value = reg!(rs2);
 
-                        self.write_memory(address, &bytes)?;
+                        self.write_memory_u32(addr, value)?;
                     }
                     _ => unimplemented!(),
                 }
@@ -656,9 +688,9 @@ impl Cpu {
             0b0101111 => {
                 // AMO系命令
                 // hartは１つの想定なのでaq, rlは無視する。
-                let address = reg!(rs1);
+                let addr = reg!(rs1);
 
-                if address % 4 != 0 {
+                if addr % 4 != 0 {
                     // アライメントされていない場合
                     return Err(Trap::StoreOrAMOAddressMisaligned);
                 }
@@ -667,26 +699,26 @@ impl Cpu {
 
                 match (funct3, upper_funct7) {
                     (0b010, 0b00010) => {
-                        let value = u32::from_le_bytes(self.read_memory(address)?);
+                        let value = self.read_memory_u32(addr)?;
 
                         reg!(rd, value);
-                        self.reserved_address = Some(address);
+                        self.reserved_addr = Some(addr);
                     } // LR.W
                     (0b010, 0b00011) => {
                         // SC.W
-                        if let Some(reserved_address) = self.reserved_address
-                            && reserved_address == address
+                        if let Some(reserved_addr) = self.reserved_addr
+                            && reserved_addr == addr
                         {
-                            self.write_memory(address, &reg!(rs2).to_le_bytes())?;
+                            self.write_memory_u32(addr, reg!(rs2))?;
                             reg!(rd, 0);
                         } else {
                             reg!(rd, 1);
                         }
 
-                        self.reserved_address = None;
+                        self.reserved_addr = None;
                     }
                     _ => {
-                        let original = u32::from_le_bytes(self.read_memory(address)?);
+                        let original = self.read_memory_u32(addr)?;
 
                         let value = match (funct3, upper_funct7) {
                             (0b010, 0b00000) => original.wrapping_add(reg!(rs2)), // AMOADD.W
@@ -702,7 +734,7 @@ impl Cpu {
                         };
 
                         reg!(rd, original);
-                        self.write_memory(address, &value.to_le_bytes())?;
+                        self.write_memory_u32(addr, value)?;
                     }
                 }
             }
@@ -726,7 +758,7 @@ impl Cpu {
                 if flag {
                     let next_pc = self.pc.wrapping_add(imm);
 
-                    self.check_misaligned_address(next_pc)?;
+                    self.check_misaligned_addr(next_pc)?;
 
                     self.pc = next_pc;
                     is_jump = true;
@@ -745,7 +777,7 @@ impl Cpu {
                 let pc = self.pc;
                 let next_pc = (imm as u32).wrapping_add(reg!(rs1)) & !1;
 
-                self.check_misaligned_address(next_pc)?;
+                self.check_misaligned_addr(next_pc)?;
 
                 self.pc = next_pc;
 
@@ -764,7 +796,7 @@ impl Cpu {
                 let pc = self.pc;
                 let next_pc = pc.wrapping_add(imm as u32);
 
-                self.check_misaligned_address(next_pc)?;
+                self.check_misaligned_addr(next_pc)?;
 
                 self.pc = next_pc;
                 reg!(rd, pc + 4);
@@ -854,12 +886,18 @@ impl Cpu {
                                 0x00000073 => {
                                     // ECALL
                                     match self.prv {
-                                        Priv::Machine => return Err(Trap::EnvCallFromMachine),
                                         Priv::Supervisor => {
                                             return Err(Trap::EnvCallFromSupervisor);
                                         }
-                                        Priv::User => return Err(Trap::EnvCallFromUser),
+                                        Priv::User => {
+                                            return Err(Trap::EnvCallFromUser);
+                                        }
+                                        Priv::Machine => return Err(Trap::EnvCallFromMachine),
                                     }
+                                }
+                                0x00100073 => {
+                                    //EBREAK
+                                    return Err(Trap::BreakPoint);
                                 }
                                 0x10500073 => {
                                     // WFI
@@ -868,11 +906,13 @@ impl Cpu {
                                     {
                                         illegal!()
                                     } else {
-                                        loop {
-                                            if self.csr.is_interrupt_active() {
-                                                break;
-                                            }
-                                        }
+                                        //loop {
+                                        //    if self.csr.is_interrupt_active() {
+                                        //        break;
+                                        //    }
+
+                                        //    panic!("{}", self);
+                                        //}
                                     }
                                 }
                                 0x10200073 => {
@@ -917,9 +957,16 @@ impl Cpu {
         let next_pc = self.translate_va(self.pc, AccessType::Fetch)?;
 
         if next_pc % 4 == 0 {
-            let buf = self.memory.raw_read(into_addr(next_pc));
+            let inst = self.bus.read_u32(
+                next_pc,
+                crate::bus::CpuContext {
+                    csr: &mut self.csr,
+                    is_walk: false,
+                    access_type: AccessType::Fetch,
+                },
+            )?;
 
-            Ok(u32::from_le_bytes(buf))
+            Ok(inst)
         } else {
             Err(Trap::InstructionAddressMisaligned)
         }
@@ -929,40 +976,94 @@ impl Cpu {
     //[todo] MMU実装時にself.csr.handle_trapに渡すvaを仮想アドレスを表すものに変更する。
     #[inline]
     pub fn handle_trap(&mut self, e: Trap) {
-        println!("[EXCEPTION]: {:?}", e);
-
         let (next_pc, next_prv) = match e {
             Trap::UnimplementedCSR | Trap::UnimplementedInstruction => {
-                println!("{:?}", e);
+                eprintln!("{:?}", e);
                 panic!("{}", self);
             }
             Trap::InstructionAddressMisaligned
             | Trap::LoadPageFault
             | Trap::StoreOrAMOPageFault
             | Trap::InstructionPageFault => {
-                let fault_address = self.fault_address.unwrap();
-                self.fault_address = None;
-                self.csr.handle_trap(self.prv, e, self.pc, fault_address)
+                let fault_addr = self.fault_addr.unwrap();
+                self.fault_addr = None;
+                self.csr.handle_trap(self.prv, e, self.pc, fault_addr)
             }
             Trap::IlligalInstruction => self.csr.handle_trap(self.prv, e, self.pc, self.inst),
-            _ => self.csr.handle_trap(self.prv, e, self.pc, self.pc),
+            Trap::SupervisorExternalInterrupt => {
+                self.prepare_external_interrupt_trap();
+                self.csr.handle_trap(self.prv, e, self.pc, 0)
+            }
+            _ => self.csr.handle_trap(self.prv, e, self.pc, 0),
         };
 
         self.pc = next_pc;
         self.change_priv(next_prv);
+
+        //    if self.csr.time == 0x0d5e517f {
+        //        panic!("break");
+        //    }
+        //}
+    }
+
+    #[inline]
+    pub fn raise_external_interrupt(&mut self) {
+        self.raise_plic_interrupt();
+    }
+
+    #[inline]
+    pub fn prepare_external_interrupt_trap(&mut self) {
+        self.prepare_plic_interrupt_trap();
+    }
+
+    #[inline]
+    pub fn raise_irq(&mut self, irq: IRQ) {
+        self.bus.plic().set_pending(irq);
+    }
+
+    #[inline]
+    pub fn raise_plic_interrupt(&mut self) {
+        if let Some(prv) = self.bus.plic().raise_interrupt() {
+            match prv {
+                Priv::Machine => self.csr.set_mip_meip(1),
+                Priv::Supervisor => self.csr.set_mip_seip(1),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[inline]
+    pub fn prepare_plic_interrupt_trap(&mut self) {
+        let irq = self.bus.plic().interrupting_irq().unwrap();
+
+        match irq {
+            IRQ::UART => self.bus.uart().take_interrupt(),
+            IRQ::None => unreachable!(),
+        }
     }
 
     // 割り込みが起こっているか確認する関数
     // 起こっている場合は割り込みに対応するExceptionを返す。
     #[inline]
-    pub fn check_intrrupt_active(&mut self) -> Option<Trap> {
+    pub fn check_local_intrrupt_active(&mut self) -> Option<Trap> {
         self.csr.resolve_pending(self.prv)
     }
 
     #[inline]
-    pub fn check_misaligned_address(&mut self, addr: u32) -> Result<()> {
+    pub fn check_external_interrupt_active(&mut self) -> bool {
+        if self.csr.can_external_interrupt(self.prv) {
+            if self.bus.uart().is_interrupting() {
+                self.raise_irq(IRQ::UART);
+                return true;
+            }
+        }
+        false
+    }
+
+    #[inline]
+    pub fn check_misaligned_addr(&mut self, addr: u32) -> Result<()> {
         if addr % 4 != 0 {
-            self.fault_address = Some(addr);
+            self.fault_addr = Some(addr);
             Err(Trap::InstructionAddressMisaligned)
         } else {
             Ok(())
@@ -971,58 +1072,36 @@ impl Cpu {
 
     #[inline]
     fn change_priv(&mut self, prv: Priv) {
-        println!("[Change Priv]: from {:?} to {:?}", self.prv, prv);
         self.prv = prv;
     }
 
-    pub fn load_flat_program(&mut self, code: &[u8]) {
-        if code.len() > MEMORY_SIZE {
-            panic!("[Error]: the program is too big.");
-        }
-
-        self.init();
-        self.memory.array.copy_from_slice(code);
+    pub fn load_flat_binary<const SIZE: usize>(
+        &mut self,
+        array: &[u8; SIZE],
+        addr: u32,
+        base_addr: u32,
+    ) {
+        self.bus.memory().load_flat_binary(array, addr, base_addr);
     }
 
-    // [todo] lazy_load_flat_program
-
-    // [todo] ライブラリ使ったほうがいいと思うがとりあえず動けばいいや
-    pub fn load_elf_program(&mut self, code: &[u8]) {
+    pub fn load_flat_program<const SIZE: usize>(&mut self, array: &[u8; SIZE], base_addr: u32) {
         self.init();
+        self.load_flat_binary(array, base_addr, base_addr);
+        self.pc = base_addr;
+    }
 
-        let ehdr_size = core::mem::size_of::<Elf32Ehdr>();
-        let ehdr = unsafe { *(&code[..ehdr_size] as *const _ as *const Elf32Ehdr) };
+    pub fn load_elf_program(&mut self, array: &[u8], base_addr: u32) {
+        self.init();
+        let entry_point = self.bus.memory().load_elf_binary(array, base_addr);
+        self.pc = entry_point;
+    }
 
-        if !ehdr.is_valid() {
-            panic!("invalid ELF32");
+    pub fn run_command(&mut self) {
+        let command = "ls\n";
+
+        for c in command.chars() {
+            self.bus.uart().push_char(c);
+            self.csr.set_mip_seip(1);
         }
-
-        let phnum = ehdr.e_phnum as usize;
-        let phoff = ehdr.e_phoff as usize;
-        let phentsize = ehdr.e_phentsize as usize;
-        let phdr_size = core::mem::size_of::<Elf32Phdr>();
-
-        for i in 0..phnum {
-            let offset = phoff + i * phentsize;
-            let phdr: Elf32Phdr =
-                unsafe { *(&code[offset..offset + phdr_size] as *const _ as *const Elf32Phdr) };
-
-            if !phdr.is_load_seg() {
-                continue;
-            }
-
-            let file_off = phdr.p_offset as usize;
-            let file_end = file_off + phdr.p_filesz as usize;
-
-            let mem_addr = (phdr.p_paddr as u32 - self.memory.base_address) as usize;
-            let mem_end = mem_addr + phdr.p_filesz as usize;
-
-            self.memory.array[mem_addr..mem_end].copy_from_slice(&code[file_off..file_end]);
-
-            let bss_end = mem_addr + phdr.p_memsz as usize;
-            self.memory.array[mem_end..bss_end].fill(0);
-        }
-
-        self.pc = ehdr.e_entry;
     }
 }

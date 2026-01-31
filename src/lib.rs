@@ -1,8 +1,8 @@
+mod bus;
 pub mod cpu;
 mod csr;
 mod elf;
 mod memory;
-mod simulator;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AccessType {
@@ -26,15 +26,21 @@ impl AccessType {
     pub fn is_exec(&self) -> bool {
         *self == Self::Fetch
     }
-}
 
-impl From<AccessType> for Trap {
     #[inline]
-    fn from(value: AccessType) -> Self {
-        match value {
-            AccessType::Read => Trap::LoadPageFault,
-            AccessType::Write => Trap::StoreOrAMOPageFault,
-            AccessType::Fetch => Trap::InstructionPageFault,
+    pub fn into_trap(&self, is_walk: bool) -> Trap {
+        if is_walk {
+            match self {
+                Self::Fetch => Trap::InstructionPageFault,
+                Self::Read => Trap::LoadPageFault,
+                Self::Write => Trap::StoreOrAMOPageFault,
+            }
+        } else {
+            match self {
+                Self::Fetch => todo!(),
+                Self::Read => Trap::LoadAccessFault,
+                Self::Write => Trap::StoreOrAMOAccessFault,
+            }
         }
     }
 }
@@ -44,6 +50,12 @@ pub enum Priv {
     User = 0,
     Supervisor = 1,
     Machine = 3,
+}
+
+impl Default for Priv {
+    fn default() -> Self {
+        Priv::Machine
+    }
 }
 
 impl From<u32> for Priv {
@@ -61,6 +73,7 @@ impl From<u32> for Priv {
 pub enum Trap {
     InstructionAddressMisaligned = 0,
     IlligalInstruction = 2,
+    BreakPoint = 3,
     LoadAddressMisaligned = 4,
     LoadAccessFault = 5,
     StoreOrAMOAddressMisaligned = 6,
@@ -73,6 +86,8 @@ pub enum Trap {
     StoreOrAMOPageFault = 15,
 
     SupervisorSoftwareInterrupt = 1 << 31 | 1,
+    SupervisorTimerInterrupt = 1 << 31 | 5,
+    SupervisorExternalInterrupt = 1 << 31 | 9,
 
     UnimplementedInstruction, // デバッグ用
     UnimplementedCSR,         // デバッグ用
@@ -92,6 +107,22 @@ impl Trap {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IRQ {
+    None = 0,
+    UART = 0xa,
+}
+
+impl From<usize> for IRQ {
+    fn from(value: usize) -> Self {
+        match value {
+            0 => Self::None,
+            0xa => Self::UART,
+            _ => unreachable!(),
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! illegal {
     () => {
@@ -100,9 +131,3 @@ macro_rules! illegal {
 }
 
 pub type Result<T> = std::result::Result<T, Trap>;
-
-// [todo] 削除する
-#[inline]
-pub const fn into_addr(x: u32) -> usize {
-    x as usize
-}

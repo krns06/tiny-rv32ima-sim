@@ -1,0 +1,92 @@
+/dts-v1/;
+
+/ {
+  #address-cells = <1>;
+  #size-cells = <1>;
+
+    aliases {
+      serial0 = "/soc/serial@10000000";
+    };
+
+    chosen {
+      bootargs = "earlycon=uart8250,mmio,0x10000000 console=ttyS0 rw init=/init";
+      // bootargs = "earlycon=sbi";
+		  stdout-path = "/soc/serial@10000000";
+      opensbi-config {
+        compatible = "opensbi,config";
+        stdout-path = "/soc/serial@10000000";
+      };
+    };
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x10000000>;
+	};
+    
+    cpus {
+      #address-cells = <1>;
+      #size-cells = <0>;
+		  timebase-frequency = <0x989680>;
+
+      cpu-map {
+        cluster0 {
+          core0 {
+              cpu = <0x01>;
+          };
+        };
+      };
+
+    
+      cpu0: cpu@0 {
+			    phandle = <0x01>;
+          device_type = "cpu";
+          status = "okay";
+          riscv,isa-base = "rv32i";
+          riscv,isa = "rv32ima_zicsr_zifencei_zicntr_zmmul_zaamo_zalrsc_svadu";
+          riscv,isa-extensions = "i", "m", "a", "svadu", "zicsr", "zifencei", "zicntr", "zmmul", "zaamo", "zalrsc";
+          mmu-type = "riscv,sv32";
+          reg = <0>;
+          compatible = "riscv";
+
+          cpu0_int: interrupt-controller {
+				    #interrupt-cells = <1>;
+            interrupt-controller;
+            compatible = "riscv,cpu-intc";
+          };
+      };
+    };
+
+    soc {
+      #address-cells = <1>;
+      #size-cells = <1>;
+      compatible = "simple-bus";
+      ranges;
+
+
+      clint@2000000 {
+        reg = <0x2000000 0x10000>;
+        compatible = "sifive,clint0", "riscv,clint0";
+        interrupts-extended = <&cpu0_int 3 &cpu0_int 7>;
+      };
+
+      
+      uart0: serial@10000000 {
+        compatible = "ns16550a";
+        interrupts = <0x0a>;
+        interrupt-parent = <0x03>;
+        reg = <0x10000000 0x100>;
+			  clock-frequency = "", "8@";
+      };
+
+		  plic@c000000 {
+		  	phandle = <0x03>;
+		  	riscv,ndev = <0x1f>;
+		  	reg = <0xc000000 0x4000000>;
+        interrupts-extended = <&cpu0_int 11 &cpu0_int 9>;
+		  	interrupt-controller;
+		  	compatible = "riscv,plic0";
+		  	#address-cells = <0x00>;
+		  	#interrupt-cells = <0x01>;
+		  };
+    };
+};
