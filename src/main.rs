@@ -24,13 +24,13 @@ fn main() {
 
     let buf = read_file("firmware/fw_jump.bin", FW_SIZE);
 
-    cpu.load_flat_program::<FW_SIZE>(buf.as_slice().try_into().unwrap(), 0x80000000);
+    cpu.load_flat_program::<FW_SIZE>(buf.as_slice().try_into().unwrap());
 
     let buf = read_file("platform.dtb", DTB_SIZE);
-    cpu.load_flat_binary::<DTB_SIZE>(buf.as_slice().try_into().unwrap(), 0x80100000, 0x80000000);
+    cpu.load_flat_binary::<DTB_SIZE>(buf.as_slice().try_into().unwrap(), 0x80100000);
 
     let buf = read_file("Image4", KERNEL_SIZE);
-    cpu.load_flat_binary::<KERNEL_SIZE>(buf.as_slice().try_into().unwrap(), 0x80400000, 0x80000000);
+    cpu.load_flat_binary::<KERNEL_SIZE>(buf.as_slice().try_into().unwrap(), 0x80400000);
 
     cpu.run();
 }
