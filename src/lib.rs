@@ -1,13 +1,8 @@
-use std::ops::Range;
-
+mod bus;
 pub mod cpu;
 mod csr;
 mod elf;
 mod memory;
-mod mmio;
-mod plic;
-mod sbi;
-mod uart;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AccessType {
@@ -31,15 +26,21 @@ impl AccessType {
     pub fn is_exec(&self) -> bool {
         *self == Self::Fetch
     }
-}
 
-impl From<AccessType> for Trap {
     #[inline]
-    fn from(value: AccessType) -> Self {
-        match value {
-            AccessType::Read => Trap::LoadPageFault,
-            AccessType::Write => Trap::StoreOrAMOPageFault,
-            AccessType::Fetch => Trap::InstructionPageFault,
+    pub fn into_trap(&self, is_walk: bool) -> Trap {
+        if is_walk {
+            match self {
+                Self::Fetch => Trap::InstructionPageFault,
+                Self::Read => Trap::LoadPageFault,
+                Self::Write => Trap::StoreOrAMOPageFault,
+            }
+        } else {
+            match self {
+                Self::Fetch => todo!(),
+                Self::Read => Trap::LoadAccessFault,
+                Self::Write => Trap::StoreOrAMOAccessFault,
+            }
         }
     }
 }
@@ -122,14 +123,6 @@ impl From<usize> for IRQ {
     }
 }
 
-//[todo] read/write_memoryの修正後に取る値を適切な型に変更する
-pub trait Device {
-    fn get_range(&self) -> Range<u32>;
-
-    fn load(&self, address: usize) -> Result<Option<Vec<u8>>>;
-    fn store(&mut self, address: usize) -> Result<()>;
-}
-
 #[macro_export]
 macro_rules! illegal {
     () => {
@@ -138,9 +131,3 @@ macro_rules! illegal {
 }
 
 pub type Result<T> = std::result::Result<T, Trap>;
-
-// [todo] 削除する
-#[inline]
-pub const fn into_addr(x: u32) -> usize {
-    x as usize
-}

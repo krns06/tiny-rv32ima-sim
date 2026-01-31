@@ -1,121 +1,91 @@
 use crate::{
-    AccessType, Result, Trap,
+    Result,
+    bus::MmioOps,
     elf::{Elf32Ehdr, Elf32Phdr},
-    into_addr,
 };
 
 pub const MEMORY_SIZE: usize = 1024 * 1024 * 512;
 
 pub struct Memory {
     pub array: Vec<u8>,
-    pub base_address: u32,
 }
 
 impl Default for Memory {
     fn default() -> Self {
         Self {
             array: vec![0; MEMORY_SIZE],
-            base_address: 0,
         }
     }
 }
 
-impl Memory {
-    pub fn init(&mut self) {
-        self.array.fill(0);
+impl MmioOps for Memory {
+    fn read(&mut self, offset: u32, size: u32, ctx: crate::bus::CpuContext) -> Result<Vec<u8>> {
+        let offset = offset as usize;
+        let size = size as usize;
+
+        if self.is_invalid_range(offset, size) {
+            return Err(ctx.make_trap());
+        }
+
+        Ok(self.raw_read(offset, size))
     }
 
-    #[inline]
-    pub fn raw_read<const SIZE: usize>(&self, address: usize) -> [u8; SIZE] {
-        let address = address - self.base_address as usize;
-        let mut buf = [0; SIZE];
+    fn write(&mut self, offset: u32, array: &[u8], ctx: crate::bus::CpuContext) -> Result<()> {
+        let offset = offset as usize;
+        let size = array.len();
 
-        buf.copy_from_slice(&self.array[address..address + SIZE]);
+        if self.is_invalid_range(offset, size) {
+            return Err(ctx.make_trap());
+        }
+
+        Ok(self.raw_write(offset, array))
+    }
+}
+
+impl Memory {
+    #[inline]
+    fn raw_read(&self, offset: usize, size: usize) -> Vec<u8> {
+        let mut buf = vec![0; size];
+
+        buf.copy_from_slice(&self.array[offset..offset + size]);
 
         buf
     }
 
     #[inline]
-    pub fn raw_write<const SIZE: usize>(&mut self, address: usize, buf: &[u8; SIZE]) -> () {
-        let address = address - self.base_address as usize;
-        self.array[address..address + SIZE].copy_from_slice(buf);
+    fn raw_write(&mut self, offset: usize, array: &[u8]) -> () {
+        self.array[offset..offset + array.len()].copy_from_slice(array);
 
         ()
     }
 
     fn is_invalid_range(&self, address: usize, size: usize) -> bool {
-        let is_over_memory = address + size > self.base_address as usize + MEMORY_SIZE;
-        let is_under_memory = address < self.base_address as usize;
+        let is_over_memory = address + size > MEMORY_SIZE;
 
-        is_over_memory || is_under_memory
+        is_over_memory
     }
 
-    #[inline]
-    pub fn read<const SIZE: usize>(&self, address: u32) -> Result<[u8; SIZE]> {
-        let address = into_addr(address);
+    pub fn load_flat_binary<const SIZE: usize>(
+        &mut self,
+        array: &[u8; SIZE],
+        addr: u32,
+        base_addr: u32,
+    ) {
+        let addr = addr as usize;
+        let base_addr = base_addr as usize;
 
-        // riscvの仕様書ではvacant address spaceは例外を起こしていいそうなので起こしている。
-        if self.is_invalid_range(address, SIZE) {
-            return Err(Trap::LoadAccessFault);
-        }
-
-        Ok(self.raw_read(address))
-    }
-
-    #[inline]
-    pub fn write<const SIZE: usize>(&mut self, address: u32, buf: &[u8; SIZE]) -> Result<()> {
-        let address = into_addr(address);
-
-        // riscvの仕様書ではvacant address spaceは例外を起こしていいそうなので起こしている。
-        if self.is_invalid_range(address, SIZE) {
-            return Err(Trap::StoreOrAMOAccessFault);
-        }
-
-        Ok(self.raw_write(address, buf))
-    }
-
-    #[inline]
-    pub fn read_for_translation<const SIZE: usize>(
-        &self,
-        address: u32,
-        access_type: AccessType,
-    ) -> Result<[u8; SIZE]> {
-        let address = into_addr(address);
-
-        if self.is_invalid_range(address, SIZE) {
-            return Err(access_type.into());
-        }
-
-        Ok(self.raw_read(address))
-    }
-
-    //#[inline]
-    //pub fn write_for_translation<const SIZE: usize>(
-    //    &mut self,
-    //    address: u32,
-    //    buf: &[u8; SIZE],
-    //    access_type: AccessType,
-    //) -> Result<()> {
-    //    let address = into_addr(address);
-
-    //    if self.is_invalid_range(address, SIZE) {
-    //        return Err(access_type.into());
-    //    }
-
-    //    Ok(self.raw_write(address, buf))
-    //}
-
-    pub fn load_flat_binary<const SIZE: usize>(&mut self, buf: &[u8; SIZE], address: usize) {
         if SIZE > MEMORY_SIZE {
             panic!("[Error]: the program is too big.");
         }
 
-        self.raw_write(address, buf);
+        let offset = addr - base_addr;
+
+        self.raw_write(offset, array);
     }
 
     // [todo] lazy_load_flat_program
 
-    pub fn load_elf_binary(&mut self, array: &[u8]) -> u32 {
+    pub fn load_elf_binary(&mut self, array: &[u8], base_addr: u32) -> u32 {
         let ehdr_size = core::mem::size_of::<Elf32Ehdr>();
         let ehdr = unsafe { *(&array[..ehdr_size] as *const _ as *const Elf32Ehdr) };
 
@@ -140,7 +110,7 @@ impl Memory {
             let file_off = phdr.p_offset as usize;
             let file_end = file_off + phdr.p_filesz as usize;
 
-            let mem_addr = (phdr.p_paddr as u32 - self.base_address) as usize;
+            let mem_addr = (phdr.p_paddr as u32 - base_addr) as usize;
             let mem_end = mem_addr + phdr.p_filesz as usize;
 
             self.array[mem_addr..mem_end].copy_from_slice(&array[file_off..file_end]);

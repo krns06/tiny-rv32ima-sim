@@ -1,28 +1,28 @@
 use std::io::Write;
 
-use crate::{AccessType, IRQ, Result, cpu::Cpu};
+use crate::{Result, bus::MmioOps};
 
-const IER_ERBFI: u32 = 1; // 受け取ったときの例外のIEのbit
-const IER_ETBEI: u32 = 0x2; // 出力したときの例外のIEのbit
+const IER_ERBFI: u8 = 1; // 受け取ったときの例外のIEのbit
+const IER_ETBEI: u8 = 0x2; // 出力したときの例外のIEのbit
 
-const IIR_NIP: u32 = 1;
-const IIR_THRE: u32 = 0x2;
-const IIR_RDA: u32 = 0x4;
-const IIR_ID: u32 = 0x6;
+const IIR_NIP: u8 = 1;
+const IIR_THRE: u8 = 0x2;
+const IIR_RDA: u8 = 0x4;
+const IIR_ID: u8 = 0x6;
 
-const LSR_THRE: u32 = 1 << 5;
-const LSR_TEMT: u32 = 1 << 6;
-const LSR_DR: u32 = 1;
+const LSR_THRE: u8 = 1 << 5;
+const LSR_TEMT: u8 = 1 << 6;
+const LSR_DR: u8 = 1;
 
 #[derive(Debug)]
 pub struct Uart {
-    lcr: u32,
-    dlm: u32,
-    dll: u32,
-    lsr: u32,
-    pub ier: u32,
-    rbr: u32,
-    pub iir: u32,
+    lcr: u8,
+    dlm: u8,
+    dll: u8,
+    lsr: u8,
+    ier: u8,
+    rbr: u8,
+    iir: u8,
 
     is_interrupting: bool,
     is_taken_interrupt: bool,
@@ -44,21 +44,19 @@ impl Default for Uart {
     }
 }
 
-impl Uart {
+impl MmioOps for Uart {
     #[inline]
-    fn is_dlab_enabled(&self) -> bool {
-        self.lcr >> 7 == 1
+    fn read(&mut self, _: u32, _: u32, _: crate::bus::CpuContext) -> Result<Vec<u8>> {
+        unreachable!();
     }
 
     #[inline]
-    pub fn push_char(&mut self, c: char) {
-        self.rbr = c as u32;
-        self.lsr |= LSR_DR;
-        self.raise_interrupt(IIR_RDA);
+    fn write(&mut self, _: u32, _: &[u8], _: crate::bus::CpuContext) -> Result<()> {
+        unreachable!();
     }
 
     #[inline]
-    fn read(&mut self, offset: u32) -> Result<u32> {
+    fn read_u8(&mut self, offset: u32, _: crate::bus::CpuContext) -> Result<u8> {
         let offset = offset & 0xFF;
 
         let v = match offset {
@@ -111,7 +109,7 @@ impl Uart {
     }
 
     #[inline]
-    fn write(&mut self, offset: u32, value: u32) -> Result<()> {
+    fn write_u8(&mut self, offset: u32, value: u8, _: crate::bus::CpuContext) -> Result<()> {
         let offset = offset & 0xFF;
 
         match offset {
@@ -157,9 +155,23 @@ impl Uart {
 
         Ok(())
     }
+}
+
+impl Uart {
+    #[inline]
+    fn is_dlab_enabled(&self) -> bool {
+        self.lcr >> 7 == 1
+    }
 
     #[inline]
-    fn raise_interrupt(&mut self, iir: u32) {
+    pub fn push_char(&mut self, c: char) {
+        self.rbr = c as u8;
+        self.lsr |= LSR_DR;
+        self.raise_interrupt(IIR_RDA);
+    }
+
+    #[inline]
+    fn raise_interrupt(&mut self, iir: u8) {
         self.is_interrupting = true;
         self.is_taken_interrupt = false;
         self.iir = iir;
@@ -181,16 +193,9 @@ impl Uart {
     pub fn take_interrupt(&mut self) {
         self.is_taken_interrupt = true;
     }
-}
-
-impl Cpu {
-    #[inline]
-    pub fn handle_uart_read(&mut self, offset: u32) -> Result<u32> {
-        self.uart.read(offset)
-    }
 
     #[inline]
-    pub fn handle_uart_write(&mut self, offset: u32, value: u32) -> Result<()> {
-        self.uart.write(offset, value)
+    pub fn is_ready_for_recieving(&self) -> bool {
+        self.iir == 1 && self.ier & 0x4 != 0
     }
 }
