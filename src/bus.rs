@@ -9,6 +9,9 @@ mod clint;
 mod plic;
 mod uart;
 
+pub const MEMORY_BASE: u32 = 0x80000000;
+pub const MEMORY_END: u32 = 0x90000000;
+
 const CLINT_BASE: u32 = 0x2000000;
 const CLINT_END: u32 = CLINT_BASE + 0x10000;
 
@@ -17,9 +20,6 @@ const PLIC_END: u32 = PLIC_BASE + 0x4000000;
 
 const UART_BASE: u32 = 0x10000000;
 const UART_END: u32 = UART_BASE + 0x100;
-
-const MEMORY_BASE: u32 = 0x80000000;
-const MEMORY_END: u32 = 0x90000000;
 
 pub struct CpuContext<'a> {
     pub csr: &'a mut Csr,

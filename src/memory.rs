@@ -1,6 +1,6 @@
 use crate::{
     Result,
-    bus::MmioOps,
+    bus::{MEMORY_BASE, MmioOps},
     elf::{Elf32Ehdr, Elf32Phdr},
 };
 
@@ -19,6 +19,7 @@ impl Default for Memory {
 }
 
 impl MmioOps for Memory {
+    #[inline]
     fn read(&mut self, offset: u32, size: u32, ctx: crate::bus::CpuContext) -> Result<Vec<u8>> {
         let offset = offset as usize;
         let size = size as usize;
@@ -30,6 +31,7 @@ impl MmioOps for Memory {
         Ok(self.raw_read(offset, size))
     }
 
+    #[inline]
     fn write(&mut self, offset: u32, array: &[u8], ctx: crate::bus::CpuContext) -> Result<()> {
         let offset = offset as usize;
         let size = array.len();
@@ -65,27 +67,21 @@ impl Memory {
         is_over_memory
     }
 
-    pub fn load_flat_binary<const SIZE: usize>(
-        &mut self,
-        array: &[u8; SIZE],
-        addr: u32,
-        base_addr: u32,
-    ) {
+    pub fn load_flat_binary<const SIZE: usize>(&mut self, array: &[u8; SIZE], addr: u32) {
         let addr = addr as usize;
-        let base_addr = base_addr as usize;
 
         if SIZE > MEMORY_SIZE {
             panic!("[Error]: the program is too big.");
         }
 
-        let offset = addr - base_addr;
+        let offset = addr - MEMORY_BASE as usize;
 
         self.raw_write(offset, array);
     }
 
     // [todo] lazy_load_flat_program
 
-    pub fn load_elf_binary(&mut self, array: &[u8], base_addr: u32) -> u32 {
+    pub fn load_elf_binary(&mut self, array: &[u8]) -> u32 {
         let ehdr_size = core::mem::size_of::<Elf32Ehdr>();
         let ehdr = unsafe { *(&array[..ehdr_size] as *const _ as *const Elf32Ehdr) };
 
@@ -110,7 +106,7 @@ impl Memory {
             let file_off = phdr.p_offset as usize;
             let file_end = file_off + phdr.p_filesz as usize;
 
-            let mem_addr = (phdr.p_paddr as u32 - base_addr) as usize;
+            let mem_addr = (phdr.p_paddr as u32 - MEMORY_BASE) as usize;
             let mem_end = mem_addr + phdr.p_filesz as usize;
 
             self.array[mem_addr..mem_end].copy_from_slice(&array[file_off..file_end]);

@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use crate::{
     AccessType, IRQ, Priv, Result, Trap,
-    bus::{Bus, CpuContext},
+    bus::{Bus, CpuContext, MEMORY_BASE},
     csr::Csr,
     illegal,
 };
@@ -79,7 +79,7 @@ impl Registers {
 
 #[derive(Default)]
 pub struct Cpu {
-    pub(crate) prv: Priv, // privは予約済みらしい
+    prv: Priv, // privは予約済みらしい
     regs: Registers,
     pc: u32, // 当面はVirtual Address想定
 
@@ -92,9 +92,6 @@ pub struct Cpu {
 
     reserved_addr: Option<u32>, // For LR.W or SC.W
     fault_addr: Option<u32>,
-
-    riscv_tests_exit_memory_addr: u32,
-    riscv_tests_finished: bool,
 }
 
 impl Display for Cpu {
@@ -136,9 +133,6 @@ impl Cpu {
 
         self.reserved_addr = None;
         self.fault_addr = None;
-
-        self.riscv_tests_exit_memory_addr = 0;
-        self.riscv_tests_finished = false;
 
         self.regs.init();
         self.bus = Bus::default();
@@ -1075,24 +1069,19 @@ impl Cpu {
         self.prv = prv;
     }
 
-    pub fn load_flat_binary<const SIZE: usize>(
-        &mut self,
-        array: &[u8; SIZE],
-        addr: u32,
-        base_addr: u32,
-    ) {
-        self.bus.memory().load_flat_binary(array, addr, base_addr);
+    pub fn load_flat_binary<const SIZE: usize>(&mut self, array: &[u8; SIZE], addr: u32) {
+        self.bus.memory().load_flat_binary(array, addr);
     }
 
-    pub fn load_flat_program<const SIZE: usize>(&mut self, array: &[u8; SIZE], base_addr: u32) {
+    pub fn load_flat_program<const SIZE: usize>(&mut self, array: &[u8; SIZE]) {
         self.init();
-        self.load_flat_binary(array, base_addr, base_addr);
-        self.pc = base_addr;
+        self.load_flat_binary(array, MEMORY_BASE);
+        self.pc = MEMORY_BASE;
     }
 
-    pub fn load_elf_program(&mut self, array: &[u8], base_addr: u32) {
+    pub fn load_elf_program(&mut self, array: &[u8]) {
         self.init();
-        let entry_point = self.bus.memory().load_elf_binary(array, base_addr);
+        let entry_point = self.bus.memory().load_elf_binary(array);
         self.pc = entry_point;
     }
 
