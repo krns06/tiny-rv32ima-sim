@@ -1,6 +1,6 @@
 # tiny-rv32ima-sim
 rv32imaのriscvエミュレータ
-![demo](https://raw.githubusercontent.com/krns06/tiny-rv32ima-sim/master/demo.gif)
+![demo](demo.gif)
 
 ## Goals
 - [X] OpenSBIのブート
