@@ -1,5 +1,8 @@
-use std::fmt::Display;
+use std::{fmt::Display, thread};
 
+use std::sync::mpsc;
+
+use crate::shell::run_shell;
 use crate::{
     AccessType, IRQ, Priv, Result, Trap,
     bus::{Bus, CpuContext, MEMORY_BASE},
@@ -359,27 +362,33 @@ impl Cpu {
     }
 
     pub fn run(&mut self) {
-        let command = "dmesg\ntop\n".chars().into_iter().collect::<Vec<char>>();
-        let mut idx = 0;
+        // let mut command: Vec<char> = "cat /proc/timer_list\n".chars().into_iter().collect();
+        let mut buf = Vec::new();
 
-        let mut flag = false;
+        let (tx, rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            run_shell(tx);
+        });
 
         loop {
-            if !flag && self.csr.time >= 0x001ee11c {
-                let is_pending = self.bus.plic().pending()[0] == 0;
+            if let Ok(v) = rx.try_recv() {
+                eprintln!("{}", v);
+                buf.push(v);
+            }
+
+            if self.csr.time >= 0x001ee11c {
                 let uart = self.bus.uart();
 
-                if is_pending && uart.is_ready_for_recieving() {
-                    if self.prv == Priv::User {
-                        uart.push_char(command[idx]);
+                if buf != Vec::new() && uart.is_ready_for_recieving() {
+                    if let Some(c) = buf.pop() {
+                        uart.push_char(c);
                         self.csr.set_mip_seip(1);
+                    }
 
-                        idx += 1;
-
-                        if idx >= command.len() {
-                            self.csr.set_mip_seip(0);
-                            flag = true;
-                        }
+                    if buf == Vec::new() {
+                        self.csr.set_mip_seip(0);
+                        buf = Vec::new();
                     }
                 }
             }

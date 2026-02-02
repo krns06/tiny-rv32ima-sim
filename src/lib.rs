@@ -3,6 +3,7 @@ pub mod cpu;
 mod csr;
 mod elf;
 mod memory;
+mod shell;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AccessType {
