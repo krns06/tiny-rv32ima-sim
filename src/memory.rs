@@ -1,6 +1,6 @@
 use crate::{
-    Result,
-    bus::{MEMORY_BASE, MmioOps},
+    AccessType, Result,
+    bus::MEMORY_BASE,
     elf::{Elf32Ehdr, Elf32Phdr},
 };
 
@@ -18,29 +18,55 @@ impl Default for Memory {
     }
 }
 
-impl MmioOps for Memory {
+impl Memory {
     #[inline]
-    fn read(&mut self, offset: u32, size: u32, ctx: crate::bus::CpuContext) -> Result<Vec<u8>> {
+    pub fn read(
+        &mut self,
+        offset: u32,
+        size: u32,
+        access_type: AccessType,
+        is_walk: bool,
+    ) -> Result<u32> {
         let offset = offset as usize;
         let size = size as usize;
 
         if self.is_invalid_range(offset, size) {
-            return Err(ctx.make_trap());
+            return Err(access_type.into_trap(is_walk));
         }
 
-        Ok(self.raw_read(offset, size))
+        let bytes = self.raw_read(offset, size);
+
+        let value = match size {
+            1 => u8::from_le_bytes(bytes.try_into().unwrap()) as u32,
+            2 => u16::from_le_bytes(bytes.try_into().unwrap()) as u32,
+            4 => u32::from_le_bytes(bytes.try_into().unwrap()),
+            _ => unreachable!(),
+        };
+
+        Ok(value)
     }
 
     #[inline]
-    fn write(&mut self, offset: u32, array: &[u8], ctx: crate::bus::CpuContext) -> Result<()> {
+    pub fn write(
+        &mut self,
+        offset: u32,
+        size: u32,
+        value: u32,
+        access_type: AccessType,
+        is_walk: bool,
+    ) -> Result<()> {
         let offset = offset as usize;
-        let size = array.len();
 
-        if self.is_invalid_range(offset, size) {
-            return Err(ctx.make_trap());
+        if self.is_invalid_range(offset, size as usize) {
+            return Err(access_type.into_trap(is_walk));
         }
 
-        Ok(self.raw_write(offset, array))
+        match size {
+            1 => Ok(self.raw_write(offset, &(value as u8).to_le_bytes())),
+            2 => Ok(self.raw_write(offset, &(value as u16).to_le_bytes())),
+            4 => Ok(self.raw_write(offset, &value.to_le_bytes())),
+            _ => unreachable!(),
+        }
     }
 }
 

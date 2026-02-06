@@ -1,4 +1,4 @@
-use crate::{IRQ, Priv, Result, bus::MmioOps};
+use crate::{IRQ, Priv, Result, csr::Csr};
 
 const PLIC_MAX_NUM: u32 = 1024;
 const PLIC_CONTEXT_MAX_NUM: u32 = 15872;
@@ -30,19 +30,13 @@ pub struct Plic {
     interrupting_ctx: Option<usize>,
 }
 
-impl MmioOps for Plic {
+impl Plic {
     #[inline]
-    fn read(&mut self, _: u32, _: u32, _: crate::bus::CpuContext) -> Result<Vec<u8>> {
-        unreachable!();
-    }
+    pub fn read(&mut self, offset: u32, size: u32, _: &mut Csr) -> Result<u32> {
+        if size != 4 {
+            unimplemented!()
+        }
 
-    #[inline]
-    fn write(&mut self, _: u32, _: &[u8], _: crate::bus::CpuContext) -> Result<()> {
-        unreachable!()
-    }
-
-    #[inline]
-    fn read_u32(&mut self, offset: u32, _: crate::bus::CpuContext) -> Result<u32> {
         match offset {
             PLIC_ENABLE_BASE..PLIC_ENABLE_END => {
                 let offset = (offset - PLIC_ENABLE_BASE) as usize;
@@ -85,7 +79,11 @@ impl MmioOps for Plic {
     }
 
     #[inline]
-    fn write_u32(&mut self, offset: u32, value: u32, ctx: crate::bus::CpuContext) -> Result<()> {
+    pub fn write(&mut self, offset: u32, size: u32, value: u32, csr: &mut Csr) -> Result<()> {
+        if size != 4 {
+            unimplemented!();
+        }
+
         match offset {
             PLIC_PRIORITY_BASE..PLIC_PRIORITY_END => {
                 let idx = (offset - PLIC_PRIORITY_BASE) as usize / 4;
@@ -124,9 +122,9 @@ impl MmioOps for Plic {
                         self.interrupting_irq = None;
 
                         if i_ctx == 0 {
-                            ctx.csr.set_mip_meip(0);
+                            csr.set_mip_meip(0);
                         } else if i_ctx == 1 {
-                            ctx.csr.set_mip_seip(0);
+                            csr.set_mip_seip(0);
                         } else {
                             unreachable!();
                         }
@@ -154,7 +152,7 @@ impl Plic {
     }
 
     #[inline]
-    pub fn unset_pending(&mut self, irq: IRQ) {
+    fn unset_pending(&mut self, irq: IRQ) {
         let irq = irq as usize;
         let idx = irq / 32;
         let bit = 1 << (irq % 32);
@@ -232,10 +230,5 @@ impl Plic {
     #[inline]
     pub fn interrupting_irq(&self) -> Option<IRQ> {
         self.interrupting_irq
-    }
-
-    #[inline]
-    pub fn pending(&self) -> &[u32] {
-        &self.pending
     }
 }

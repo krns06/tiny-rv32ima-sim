@@ -1,6 +1,11 @@
 use std::io::Write;
+use std::sync::mpsc::Receiver;
 
-use crate::{Result, bus::MmioOps};
+use crate::{
+    Result,
+    bus::{ExternalDevice, ExternalDeviceResponse, TickStatus},
+    memory::Memory,
+};
 
 const IER_ERBFI: u8 = 1; // 受け取ったときの例外のIEのbit
 const IER_ETBEI: u8 = 0x2; // 出力したときの例外のIEのbit
@@ -26,40 +31,26 @@ pub struct Uart {
 
     is_interrupting: bool,
     is_taken_interrupt: bool,
+
+    input_buf: Vec<char>,
+    input_rx: Receiver<char>,
 }
 
-impl Default for Uart {
-    fn default() -> Self {
-        Uart {
-            lcr: 0,
-            dlm: 0,
-            dll: 0,
-            lsr: LSR_TEMT | LSR_THRE,
-            ier: 0,
-            rbr: 0,
-            iir: IIR_NIP,
-            is_interrupting: false,
-            is_taken_interrupt: false,
+impl ExternalDevice for Uart {
+    #[inline]
+    fn read(
+        &mut self,
+        offset: u32,
+        size: u32,
+        _: &mut Memory,
+    ) -> Result<ExternalDeviceResponse<u32>> {
+        if size != 1 {
+            unimplemented!();
         }
-    }
-}
 
-impl MmioOps for Uart {
-    #[inline]
-    fn read(&mut self, _: u32, _: u32, _: crate::bus::CpuContext) -> Result<Vec<u8>> {
-        unreachable!();
-    }
-
-    #[inline]
-    fn write(&mut self, _: u32, _: &[u8], _: crate::bus::CpuContext) -> Result<()> {
-        unreachable!();
-    }
-
-    #[inline]
-    fn read_u8(&mut self, offset: u32, _: crate::bus::CpuContext) -> Result<u8> {
         let offset = offset & 0xFF;
 
-        let v = match offset {
+        let value = match offset {
             0 => {
                 if self.is_dlab_enabled() {
                     // DLL
@@ -103,13 +94,27 @@ impl MmioOps for Uart {
             3 => self.lcr,
             5 => self.lsr,
             _ => 0,
-        };
+        } as u32;
 
-        Ok(v)
+        Ok(ExternalDeviceResponse {
+            value,
+            is_interrupting: self.is_interrupting,
+        })
     }
 
     #[inline]
-    fn write_u8(&mut self, offset: u32, value: u8, _: crate::bus::CpuContext) -> Result<()> {
+    fn write(
+        &mut self,
+        offset: u32,
+        size: u32,
+        value: u32,
+        _: &mut Memory,
+    ) -> Result<ExternalDeviceResponse<()>> {
+        if size != 1 {
+            unimplemented!()
+        }
+
+        let value = value as u8;
         let offset = offset & 0xFF;
 
         match offset {
@@ -153,11 +158,62 @@ impl MmioOps for Uart {
             _ => {}
         }
 
-        Ok(())
+        Ok(ExternalDeviceResponse {
+            value: (),
+            is_interrupting: self.is_interrupting,
+        })
+    }
+
+    #[inline]
+    fn irq(&self) -> crate::IRQ {
+        crate::IRQ::UART
+    }
+
+    #[inline]
+    fn take_interrupt(&mut self) {
+        self.is_taken_interrupt = true;
+    }
+
+    #[inline]
+    fn tick(&mut self) -> TickStatus {
+        if let Ok(c) = self.input_rx.try_recv() {
+            self.input_buf.push(c);
+        }
+
+        if self.input_buf != Vec::new() && self.is_ready_for_recieving() {
+            if let Some(c) = self.input_buf.pop() {
+                self.push_char(c);
+                return TickStatus::Enable;
+            }
+
+            if self.input_buf == Vec::new() {
+                return TickStatus::Disable;
+            }
+        }
+
+        TickStatus::None
     }
 }
 
 impl Uart {
+    pub fn new(input_rx: Receiver<char>) -> Self {
+        let input_buf = Vec::new();
+
+        Uart {
+            lcr: 0,
+            dlm: 0,
+            dll: 0,
+            lsr: LSR_TEMT | LSR_THRE,
+            ier: 0,
+            rbr: 0,
+            iir: IIR_NIP,
+            is_interrupting: false,
+            is_taken_interrupt: false,
+            input_buf,
+            input_rx,
+        }
+    }
+
     #[inline]
     fn is_dlab_enabled(&self) -> bool {
         self.lcr >> 7 == 1
@@ -182,16 +238,6 @@ impl Uart {
         self.is_interrupting = false;
         self.iir = IIR_NIP;
         self.lsr = LSR_THRE | LSR_TEMT;
-    }
-
-    #[inline]
-    pub fn is_interrupting(&self) -> bool {
-        self.is_interrupting
-    }
-
-    #[inline]
-    pub fn take_interrupt(&mut self) {
-        self.is_taken_interrupt = true;
     }
 
     #[inline]

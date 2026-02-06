@@ -1,10 +1,11 @@
+use std::sync::mpsc::Sender;
 use std::{fmt::Display, thread};
 
 use std::sync::mpsc;
 
 use crate::shell::run_shell;
 use crate::{
-    AccessType, IRQ, Priv, Result, Trap,
+    AccessType, Priv, Result, Trap,
     bus::{Bus, CpuContext, MEMORY_BASE},
     csr::Csr,
     illegal,
@@ -80,7 +81,6 @@ impl Registers {
     }
 }
 
-#[derive(Default)]
 pub struct Cpu {
     prv: Priv, // privは予約済みらしい
     regs: Registers,
@@ -95,6 +95,8 @@ pub struct Cpu {
 
     reserved_addr: Option<u32>, // For LR.W or SC.W
     fault_addr: Option<u32>,
+
+    uart_tx: Sender<char>,
 }
 
 impl Display for Cpu {
@@ -127,18 +129,33 @@ impl Display for Cpu {
     }
 }
 
+impl Default for Cpu {
+    fn default() -> Self {
+        let prv = Priv::Machine;
+        let regs = Registers::default();
+        let csr = Csr::default();
+
+        let (uart_tx, uart_rx) = mpsc::channel();
+
+        let bus = Bus::new(uart_rx);
+
+        Self {
+            prv,
+            regs,
+            pc: 0,
+            inst: 0,
+            csr,
+            bus,
+            reserved_addr: None,
+            fault_addr: None,
+            uart_tx,
+        }
+    }
+}
+
 impl Cpu {
     pub fn init(&mut self) {
-        self.prv = Priv::Machine;
-        self.pc = 0;
-        self.inst = 0;
-        self.csr = Csr::default();
-
-        self.reserved_addr = None;
-        self.fault_addr = None;
-
-        self.regs.init();
-        self.bus = Bus::default();
+        *self = Self::default();
     }
 
     fn read_reg(&self, reg: u32) -> u32 {
@@ -188,8 +205,9 @@ impl Cpu {
             let vpn = (vpns >> (10 * i)) & 0x3ff;
             let pte_addr = addr + vpn * PTESIZE;
 
-            pte = self.bus.read_u32(
+            pte = self.bus.read(
                 pte_addr,
+                4,
                 crate::bus::CpuContext {
                     csr: &mut self.csr,
                     is_walk: true,
@@ -271,7 +289,7 @@ impl Cpu {
     }
 
     #[inline]
-    pub fn read_memory_u8(&mut self, addr: u32) -> Result<u8> {
+    pub fn read_memory(&mut self, addr: u32, size: u32) -> Result<u32> {
         let access_type = AccessType::Read;
         let pa = self.translate_va(addr, access_type)?;
         let ctx = CpuContext {
@@ -280,37 +298,26 @@ impl Cpu {
             access_type,
         };
 
-        self.bus.read_u8(pa, ctx)
+        self.bus.read(pa, size, ctx)
     }
 
     #[inline]
-    pub fn read_memory_u16(&mut self, addr: u32) -> Result<u16> {
-        let access_type = AccessType::Read;
-        let pa = self.translate_va(addr, access_type)?;
-        let ctx = CpuContext {
-            csr: &mut self.csr,
-            is_walk: false,
-            access_type,
-        };
+    pub fn read_memory_u8(&mut self, addr: u32) -> Result<u32> {
+        self.read_memory(addr, 1)
+    }
 
-        self.bus.read_u16(pa, ctx)
+    #[inline]
+    pub fn read_memory_u16(&mut self, addr: u32) -> Result<u32> {
+        self.read_memory(addr, 2)
     }
 
     #[inline]
     pub fn read_memory_u32(&mut self, addr: u32) -> Result<u32> {
-        let access_type = AccessType::Read;
-        let pa = self.translate_va(addr, access_type)?;
-        let ctx = CpuContext {
-            csr: &mut self.csr,
-            is_walk: false,
-            access_type,
-        };
-
-        self.bus.read_u32(pa, ctx)
+        self.read_memory(addr, 4)
     }
 
     #[inline]
-    pub fn write_memory_u8(&mut self, addr: u32, value: u8) -> Result<()> {
+    pub fn write_memory(&mut self, addr: u32, size: u32, value: u32) -> Result<()> {
         let access_type = AccessType::Write;
 
         let pa = self.translate_va(addr, access_type)?;
@@ -320,35 +327,22 @@ impl Cpu {
             access_type,
         };
 
-        self.bus.write_u8(pa, value, ctx)
+        self.bus.write(pa, size, value, ctx)
     }
 
     #[inline]
-    pub fn write_memory_u16(&mut self, addr: u32, value: u16) -> Result<()> {
-        let access_type = AccessType::Write;
+    pub fn write_memory_u8(&mut self, addr: u32, value: u32) -> Result<()> {
+        self.write_memory(addr, 1, value)
+    }
 
-        let pa = self.translate_va(addr, access_type)?;
-        let ctx = CpuContext {
-            csr: &mut self.csr,
-            is_walk: false,
-            access_type,
-        };
-
-        self.bus.write_u16(pa, value, ctx)
+    #[inline]
+    pub fn write_memory_u16(&mut self, addr: u32, value: u32) -> Result<()> {
+        self.write_memory(addr, 2, value)
     }
 
     #[inline]
     pub fn write_memory_u32(&mut self, addr: u32, value: u32) -> Result<()> {
-        let access_type = AccessType::Write;
-
-        let pa = self.translate_va(addr, access_type)?;
-        let ctx = CpuContext {
-            csr: &mut self.csr,
-            is_walk: false,
-            access_type,
-        };
-
-        self.bus.write_u32(pa, value, ctx)
+        self.write_memory(addr, 4, value)
     }
 
     #[inline]
@@ -361,41 +355,15 @@ impl Cpu {
         self.csr.write(csr, value, self.prv)
     }
 
-    pub fn run(&mut self) {
-        // let mut command: Vec<char> = "cat /proc/timer_list\n".chars().into_iter().collect();
-        let mut buf = Vec::new();
-
-        let (tx, rx) = mpsc::channel();
+    pub fn run(&mut self) -> ! {
+        let tx = self.uart_tx.clone();
 
         thread::spawn(move || {
             run_shell(tx);
         });
 
         loop {
-            if let Ok(v) = rx.try_recv() {
-                eprintln!("{}", v);
-                buf.push(v);
-            }
-
-            if self.csr.time >= 0x001ee11c {
-                let uart = self.bus.uart();
-
-                if buf != Vec::new() && uart.is_ready_for_recieving() {
-                    if let Some(c) = buf.pop() {
-                        uart.push_char(c);
-                        self.csr.set_mip_seip(1);
-                    }
-
-                    if buf == Vec::new() {
-                        self.csr.set_mip_seip(0);
-                        buf = Vec::new();
-                    }
-                }
-            }
-
-            if self.check_external_interrupt_active() {
-                self.raise_external_interrupt();
-            }
+            self.bus.tick(self.prv, &mut self.csr);
 
             if let Some(e) = self.check_local_intrrupt_active() {
                 self.handle_trap(e);
@@ -403,9 +371,6 @@ impl Cpu {
 
             match self.step() {
                 Err(e) => {
-                    //if self.pc == 0x001d2fd0 {
-                    //    panic!("{}", self)
-                    //}
                     self.handle_trap(e);
                 }
                 Ok(is_jump) => {
@@ -461,12 +426,12 @@ impl Cpu {
                     //[todo] refactor
                     0b000 => {
                         // LB
-                        let value = self.read_memory_u8(addr)? as u32;
+                        let value = self.read_memory_u8(addr)?;
                         (((value << 24) as i32) >> 24) as u32
                     }
                     0b001 => {
                         // LH
-                        let value = self.read_memory_u16(addr)? as u32;
+                        let value = self.read_memory_u16(addr)?;
                         (((value << 16) as i32) >> 16) as u32
                     }
                     0b010 => {
@@ -475,11 +440,11 @@ impl Cpu {
                     }
                     0b100 => {
                         // LBU
-                        self.read_memory_u8(addr)? as u32
+                        self.read_memory_u8(addr)?
                     }
                     0b101 => {
                         // LHU
-                        self.read_memory_u16(addr)? as u32
+                        self.read_memory_u16(addr)?
                     }
                     _ => unimplemented!(),
                 };
@@ -563,13 +528,13 @@ impl Cpu {
                         //SB
                         let value = reg!(rs2) as u8;
 
-                        self.write_memory_u8(addr, value)?;
+                        self.write_memory_u8(addr, value as u32)?;
                     }
                     0b001 => {
                         // SH
                         let value = reg!(rs2) as u16;
 
-                        self.write_memory_u16(addr, value)?;
+                        self.write_memory_u16(addr, value as u32)?;
                     }
                     0b010 => {
                         // SW
@@ -960,8 +925,9 @@ impl Cpu {
         let next_pc = self.translate_va(self.pc, AccessType::Fetch)?;
 
         if next_pc % 4 == 0 {
-            let inst = self.bus.read_u32(
+            let inst = self.bus.read(
                 next_pc,
+                4,
                 crate::bus::CpuContext {
                     csr: &mut self.csr,
                     is_walk: false,
@@ -994,7 +960,7 @@ impl Cpu {
             }
             Trap::IlligalInstruction => self.csr.handle_trap(self.prv, e, self.pc, self.inst),
             Trap::SupervisorExternalInterrupt => {
-                self.prepare_external_interrupt_trap();
+                self.prepare_external_interrupt();
                 self.csr.handle_trap(self.prv, e, self.pc, 0)
             }
             _ => self.csr.handle_trap(self.prv, e, self.pc, 0),
@@ -1010,39 +976,8 @@ impl Cpu {
     }
 
     #[inline]
-    pub fn raise_external_interrupt(&mut self) {
-        self.raise_plic_interrupt();
-    }
-
-    #[inline]
-    pub fn prepare_external_interrupt_trap(&mut self) {
-        self.prepare_plic_interrupt_trap();
-    }
-
-    #[inline]
-    pub fn raise_irq(&mut self, irq: IRQ) {
-        self.bus.plic().set_pending(irq);
-    }
-
-    #[inline]
-    pub fn raise_plic_interrupt(&mut self) {
-        if let Some(prv) = self.bus.plic().raise_interrupt() {
-            match prv {
-                Priv::Machine => self.csr.set_mip_meip(1),
-                Priv::Supervisor => self.csr.set_mip_seip(1),
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    #[inline]
-    pub fn prepare_plic_interrupt_trap(&mut self) {
-        let irq = self.bus.plic().interrupting_irq().unwrap();
-
-        match irq {
-            IRQ::UART => self.bus.uart().take_interrupt(),
-            IRQ::None => unreachable!(),
-        }
+    pub fn prepare_external_interrupt(&mut self) {
+        self.bus.prepare_interrupt();
     }
 
     // 割り込みが起こっているか確認する関数
@@ -1050,17 +985,6 @@ impl Cpu {
     #[inline]
     pub fn check_local_intrrupt_active(&mut self) -> Option<Trap> {
         self.csr.resolve_pending(self.prv)
-    }
-
-    #[inline]
-    pub fn check_external_interrupt_active(&mut self) -> bool {
-        if self.csr.can_external_interrupt(self.prv) {
-            if self.bus.uart().is_interrupting() {
-                self.raise_irq(IRQ::UART);
-                return true;
-            }
-        }
-        false
     }
 
     #[inline]
@@ -1083,23 +1007,12 @@ impl Cpu {
     }
 
     pub fn load_flat_program<const SIZE: usize>(&mut self, array: &[u8; SIZE]) {
-        self.init();
         self.load_flat_binary(array, MEMORY_BASE);
         self.pc = MEMORY_BASE;
     }
 
     pub fn load_elf_program(&mut self, array: &[u8]) {
-        self.init();
         let entry_point = self.bus.memory().load_elf_binary(array);
         self.pc = entry_point;
-    }
-
-    pub fn run_command(&mut self) {
-        let command = "ls\n";
-
-        for c in command.chars() {
-            self.bus.uart().push_char(c);
-            self.csr.set_mip_seip(1);
-        }
     }
 }

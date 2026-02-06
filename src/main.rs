@@ -29,7 +29,7 @@ fn main() {
     let buf = read_file("platform.dtb", DTB_SIZE);
     cpu.load_flat_binary::<DTB_SIZE>(buf.as_slice().try_into().unwrap(), 0x80100000);
 
-    let buf = read_file("Image4", KERNEL_SIZE);
+    let buf = read_file("Image5", KERNEL_SIZE);
     cpu.load_flat_binary::<KERNEL_SIZE>(buf.as_slice().try_into().unwrap(), 0x80400000);
 
     cpu.run();
