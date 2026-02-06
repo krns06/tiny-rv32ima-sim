@@ -1,5 +1,5 @@
 # tiny-rv32ima-sim
-rv32imaのriscvエミュレータ
+rv32imaのriscvシミュレータ
 ![demo](demo.gif)
 
 ## Goals
