@@ -1,8 +1,12 @@
-use std::{ops::Range, sync::mpsc::Receiver};
+use std::{
+    collections::VecDeque,
+    ops::Range,
+    sync::mpsc::{Receiver, Sender},
+};
 
 use crate::{
     AccessType, IRQ, Priv, Result, Trap,
-    bus::{clint::Clint, plic::Plic, uart::Uart},
+    bus::{clint::Clint, plic::Plic, uart::Uart, virtio_net::VirtioNet},
     csr::Csr,
     memory::Memory,
 };
@@ -24,6 +28,9 @@ const PLIC_END: u32 = PLIC_BASE + 0x4000000;
 
 const UART_BASE: u32 = 0x10000000;
 const UART_END: u32 = UART_BASE + 0x100;
+
+const VIRTIO_NET_BASE: u32 = 0x10008000;
+const VIRTIO_NET_END: u32 = VIRTIO_NET_BASE + 0x1000;
 
 pub struct CpuContext<'a> {
     pub csr: &'a mut Csr,
@@ -57,16 +64,9 @@ pub trait ExternalDevice: std::fmt::Debug {
 
     // tickごとに実行される関数
     // 外部割り込みが有効な場合に実行される
-    fn tick(&mut self) -> TickStatus {
-        TickStatus::None
+    fn tick(&mut self, _: &mut Memory) -> bool {
+        false
     }
-}
-
-#[derive(PartialEq, Eq)]
-pub enum TickStatus {
-    Enable,
-    Disable,
-    None,
 }
 
 #[derive(Debug)]
@@ -82,6 +82,8 @@ pub struct Bus {
     plic: Plic,
 
     devices: Vec<Device>,
+
+    irqs_to_raise: VecDeque<IRQ>,
 }
 
 impl Device {
@@ -98,7 +100,11 @@ impl<'a> CpuContext<'a> {
 }
 
 impl Bus {
-    pub fn new(uart_rx: Receiver<char>) -> Self {
+    pub fn new(
+        uart_rx: Receiver<char>,
+        virtio_net_rx: Receiver<Vec<u8>>,
+        virtio_net_tx: Sender<Vec<u8>>,
+    ) -> Self {
         let memory = Memory::default();
         let clint = Clint::default();
         let plic = Plic::default();
@@ -108,12 +114,17 @@ impl Bus {
             Box::new(Uart::new(uart_rx)),
             UART_BASE..UART_END,
         ));
+        devices.push(Device::new(
+            Box::new(VirtioNet::new(virtio_net_rx, virtio_net_tx)),
+            VIRTIO_NET_BASE..VIRTIO_NET_END,
+        ));
 
         Self {
             memory,
             clint,
             plic,
             devices,
+            irqs_to_raise: VecDeque::new(),
         }
     }
 
@@ -136,8 +147,7 @@ impl Bus {
 
                         if res.is_interrupting {
                             let irq = self.devices[i].device.irq();
-                            self.raise_irq(irq);
-                            self.raise_interrupt(ctx.csr);
+                            self.irqs_to_raise.push_back(irq);
                         }
                         return Ok(res.value);
                     }
@@ -171,8 +181,7 @@ impl Bus {
 
                         if res.is_interrupting {
                             let irq = self.devices[i].device.irq();
-                            self.raise_irq(irq);
-                            self.raise_interrupt(ctx.csr);
+                            self.irqs_to_raise.push_back(irq);
                         }
                         return Ok(res.value);
                     }
@@ -189,33 +198,21 @@ impl Bus {
             return;
         }
 
-        let mut next_status = TickStatus::None;
-        let mut irq = IRQ::None;
-
         for device in &mut self.devices {
-            let status = device.device.tick();
+            let is_interrupting = device.device.tick(&mut self.memory);
 
-            match next_status {
-                TickStatus::Enable => {}
-                TickStatus::Disable | TickStatus::None => {
-                    if status != TickStatus::None {
-                        if status == TickStatus::Enable {
-                            irq = device.device.irq();
-                        }
-
-                        next_status = status;
-                    }
-                }
+            if is_interrupting {
+                self.irqs_to_raise.push_back(device.device.irq());
             }
         }
 
-        match next_status {
-            TickStatus::Enable => {
-                self.raise_irq(irq);
-                self.raise_interrupt(csr);
-            }
-            TickStatus::Disable => csr.set_mip_seip(0),
-            TickStatus::None => {}
+        if self.irqs_to_raise.len() != 0 {
+            let irq = self.irqs_to_raise.pop_front().unwrap();
+            self.raise_irq(irq);
+            self.raise_interrupt(csr);
+            return;
+        } else {
+            csr.set_mip_seip(0);
         }
     }
 
@@ -251,13 +248,5 @@ impl Bus {
 
     pub fn memory(&mut self) -> &mut Memory {
         &mut self.memory
-    }
-
-    pub fn plic(&mut self) -> &mut Plic {
-        &mut self.plic
-    }
-
-    pub fn devices(&mut self) -> &mut Vec<Device> {
-        &mut self.devices
     }
 }

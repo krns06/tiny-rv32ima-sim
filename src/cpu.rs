@@ -1,8 +1,9 @@
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::{fmt::Display, thread};
 
 use std::sync::mpsc;
 
+use crate::net::run_net;
 use crate::shell::run_shell;
 use crate::{
     AccessType, Priv, Result, Trap,
@@ -97,6 +98,8 @@ pub struct Cpu {
     fault_addr: Option<u32>,
 
     uart_tx: Sender<char>,
+    virtio_net_input_tx: Sender<Vec<u8>>,
+    virtio_net_output_rx: Option<Receiver<Vec<u8>>>, //[todo] 流石にやばいから治すべき
 }
 
 impl Display for Cpu {
@@ -137,7 +140,10 @@ impl Default for Cpu {
 
         let (uart_tx, uart_rx) = mpsc::channel();
 
-        let bus = Bus::new(uart_rx);
+        let (virtio_net_input_tx, virtio_net_input_rx) = mpsc::channel();
+        let (virtio_net_output_tx, virtio_net_output_rx) = mpsc::channel();
+
+        let bus = Bus::new(uart_rx, virtio_net_input_rx, virtio_net_output_tx);
 
         Self {
             prv,
@@ -149,6 +155,8 @@ impl Default for Cpu {
             reserved_addr: None,
             fault_addr: None,
             uart_tx,
+            virtio_net_input_tx,
+            virtio_net_output_rx: Some(virtio_net_output_rx),
         }
     }
 }
@@ -356,10 +364,18 @@ impl Cpu {
     }
 
     pub fn run(&mut self) -> ! {
-        let tx = self.uart_tx.clone();
+        let uart_tx = self.uart_tx.clone();
 
         thread::spawn(move || {
-            run_shell(tx);
+            run_shell(uart_tx).unwrap();
+        });
+
+        //[todo] もうちょっとちゃんと書き直したほうがいい
+        let virtio_net_tx = self.virtio_net_input_tx.clone();
+        let virtio_net_rx = self.virtio_net_output_rx.take();
+
+        thread::spawn(|| {
+            run_net("tap0", virtio_net_tx, virtio_net_rx.unwrap()).unwrap();
         });
 
         loop {

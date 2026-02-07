@@ -3,6 +3,7 @@ pub mod cpu;
 mod csr;
 mod elf;
 mod memory;
+mod net;
 mod shell;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -111,14 +112,16 @@ impl Trap {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IRQ {
     None = 0,
-    UART = 0xa,
+    VirtioNet = 1,
+    Uart = 0xa,
 }
 
 impl From<usize> for IRQ {
     fn from(value: usize) -> Self {
         match value {
             0 => Self::None,
-            0xa => Self::UART,
+            1 => Self::VirtioNet,
+            0xa => Self::Uart,
             _ => unreachable!(),
         }
     }

@@ -72,7 +72,7 @@ impl Memory {
 
 impl Memory {
     #[inline]
-    fn raw_read(&self, offset: usize, size: usize) -> Vec<u8> {
+    pub fn raw_read(&self, offset: usize, size: usize) -> Vec<u8> {
         let mut buf = vec![0; size];
 
         buf.copy_from_slice(&self.array[offset..offset + size]);
@@ -81,10 +81,22 @@ impl Memory {
     }
 
     #[inline]
-    fn raw_write(&mut self, offset: usize, array: &[u8]) -> () {
+    pub fn raw_write(&mut self, offset: usize, array: &[u8]) -> () {
         self.array[offset..offset + array.len()].copy_from_slice(array);
 
         ()
+    }
+
+    #[inline]
+    pub fn raw_ptr(&self, addr: usize, size: usize) -> &[u8] {
+        let offset = addr - MEMORY_BASE as usize;
+        &self.array[offset..offset + size]
+    }
+
+    #[inline]
+    pub fn raw_mut_ptr(&mut self, addr: usize, size: usize) -> &mut [u8] {
+        let offset = addr - MEMORY_BASE as usize;
+        &mut self.array[offset..offset + size]
     }
 
     fn is_invalid_range(&self, address: usize, size: usize) -> bool {
