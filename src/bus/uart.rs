@@ -3,7 +3,7 @@ use std::sync::mpsc::Receiver;
 
 use crate::{
     Result,
-    bus::{ExternalDevice, ExternalDeviceResponse, TickStatus},
+    bus::{ExternalDevice, ExternalDeviceResponse},
     memory::Memory,
 };
 
@@ -166,7 +166,7 @@ impl ExternalDevice for Uart {
 
     #[inline]
     fn irq(&self) -> crate::IRQ {
-        crate::IRQ::UART
+        crate::IRQ::Uart
     }
 
     #[inline]
@@ -175,7 +175,7 @@ impl ExternalDevice for Uart {
     }
 
     #[inline]
-    fn tick(&mut self) -> TickStatus {
+    fn tick(&mut self, _: &mut Memory) -> bool {
         if let Ok(c) = self.input_rx.try_recv() {
             self.input_buf.push(c);
         }
@@ -183,15 +183,15 @@ impl ExternalDevice for Uart {
         if self.input_buf != Vec::new() && self.is_ready_for_recieving() {
             if let Some(c) = self.input_buf.pop() {
                 self.push_char(c);
-                return TickStatus::Enable;
+                return true;
             }
 
             if self.input_buf == Vec::new() {
-                return TickStatus::Disable;
+                return false;
             }
         }
 
-        TickStatus::None
+        false
     }
 }
 
