@@ -1,9 +1,10 @@
 mod bus;
 pub mod cpu;
 mod csr;
+mod device;
 mod elf;
 mod memory;
-mod shell;
+pub mod simulator;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AccessType {
@@ -111,14 +112,18 @@ impl Trap {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IRQ {
     None = 0,
-    UART = 0xa,
+    VirtioNet = 1,
+    VirtioGpu = 2,
+    Uart = 0xa,
 }
 
 impl From<usize> for IRQ {
     fn from(value: usize) -> Self {
         match value {
             0 => Self::None,
-            0xa => Self::UART,
+            1 => Self::VirtioNet,
+            2 => Self::VirtioGpu,
+            0xa => Self::Uart,
             _ => unreachable!(),
         }
     }

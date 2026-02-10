@@ -9,9 +9,11 @@
     };
 
     chosen {
-      bootargs = "earlycon=uart8250,mmio,0x10000000 console=ttyS0 rw init=/init";
+      // bootargs = "earlycon=uart8250,mmio,0x10000000 console=tty0 rw init=/init";
+      bootargs = "earlycon=uart8250,mmio,0x10000000 console=ttyS0,115200 rw init=/init";
       // bootargs = "earlycon=sbi";
-		  stdout-path = "/soc/serial@10000000";
+     stdout-path = "/soc/serial@10000000";
+		  // stdout-path = "framebuffer0";
       opensbi-config {
         compatible = "opensbi,config";
         stdout-path = "/soc/serial@10000000";
@@ -69,6 +71,19 @@
         interrupts-extended = <&cpu0_int 3 &cpu0_int 7>;
       };
 
+      virtio_net@10008000 {
+        compatible = "virtio,mmio";
+        reg = <0x10008000 0x1000>;
+        interrupts = <1>;
+			  interrupt-parent = <0x03>;
+      };
+
+      virtio_gpu@10009000 {
+        compatible = "virtio,mmio";
+        reg = <0x10009000 0x1000>;
+        interrupts = <2>;
+			  interrupt-parent = <0x03>;
+      };
       
       uart0: serial@10000000 {
         compatible = "ns16550a";

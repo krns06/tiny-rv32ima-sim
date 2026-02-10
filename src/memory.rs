@@ -1,3 +1,5 @@
+use std::mem::transmute;
+
 use crate::{
     AccessType, Result,
     bus::MEMORY_BASE,
@@ -6,6 +8,7 @@ use crate::{
 
 pub const MEMORY_SIZE: usize = 1024 * 1024 * 512;
 
+#[derive(Debug)]
 pub struct Memory {
     pub array: Vec<u8>,
 }
@@ -72,7 +75,7 @@ impl Memory {
 
 impl Memory {
     #[inline]
-    fn raw_read(&self, offset: usize, size: usize) -> Vec<u8> {
+    pub fn raw_read(&self, offset: usize, size: usize) -> Vec<u8> {
         let mut buf = vec![0; size];
 
         buf.copy_from_slice(&self.array[offset..offset + size]);
@@ -81,22 +84,59 @@ impl Memory {
     }
 
     #[inline]
-    fn raw_write(&mut self, offset: usize, array: &[u8]) -> () {
+    pub fn raw_write(&mut self, offset: usize, array: &[u8]) -> () {
         self.array[offset..offset + array.len()].copy_from_slice(array);
 
         ()
     }
 
+    #[inline]
+    pub fn raw_ptr(&self, addr: usize, size: usize) -> &[u8] {
+        let offset = addr - MEMORY_BASE as usize;
+        &self.array[offset..offset + size]
+    }
+
+    #[inline]
+    pub fn view_as<T>(&self, addr: usize, len: usize) -> &T {
+        let size = size_of::<T>();
+
+        if size > len {
+            panic!("[ERROR] len(0x{:x}) > size(0x{:x})", len, size);
+        }
+
+        let ptr = self.raw_ptr(addr, size);
+
+        unsafe { transmute(ptr.as_ptr()) }
+    }
+
+    #[inline]
+    pub fn raw_mut_ptr(&mut self, addr: usize, size: usize) -> &mut [u8] {
+        let offset = addr - MEMORY_BASE as usize;
+        &mut self.array[offset..offset + size]
+    }
+
+    #[inline]
+    pub fn mut_view_as<T>(&mut self, addr: usize, len: usize) -> &mut T {
+        let size = size_of::<T>();
+
+        if size > len {
+            panic!("[ERROR] len(0x{:x}) > size(0x{:x})", len, size);
+        }
+
+        let ptr = self.raw_mut_ptr(addr, size);
+
+        unsafe { transmute(ptr.as_ptr()) }
+    }
     fn is_invalid_range(&self, address: usize, size: usize) -> bool {
         let is_over_memory = address + size > MEMORY_SIZE;
 
         is_over_memory
     }
 
-    pub fn load_flat_binary<const SIZE: usize>(&mut self, array: &[u8; SIZE], addr: u32) {
+    pub fn load_flat_binary(&mut self, array: &[u8], addr: u32) {
         let addr = addr as usize;
 
-        if SIZE > MEMORY_SIZE {
+        if array.len() > MEMORY_SIZE {
             panic!("[Error]: the program is too big.");
         }
 
