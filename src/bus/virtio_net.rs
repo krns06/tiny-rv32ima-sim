@@ -6,7 +6,10 @@ use std::{
 use crate::{
     bus::{
         ExternalDevice, ExternalDeviceResponse, ExternalDeviceResult,
-        virtio_mmio::{VIRTIO_REG_CONFIG, VIRTIO_REG_STATUS, VirtioMmio, VirtioType, read_panic},
+        virtio_mmio::{
+            VIRTIO_REG_CONFIG, VIRTIO_REG_NOTIFY, VIRTIO_REG_STATUS, VirtioMmio, VirtioType,
+            read_panic,
+        },
     },
     memory::Memory,
 };
@@ -76,7 +79,7 @@ impl ExternalDevice for VirtioNet {
         memory: &mut Memory,
     ) -> ExternalDeviceResult<()> {
         match offset {
-            0x50 => {
+            VIRTIO_REG_NOTIFY => {
                 let is_interrupting = self.handle_notify(value, memory);
 
                 return Ok(ExternalDeviceResponse {
@@ -196,6 +199,9 @@ impl VirtioNet {
         let last_idx = self.last_idxes[queue_idx as usize];
 
         eprintln!("[NOTIFY]");
+        if driver.idx == last_idx {
+            return false;
+        }
 
         match queue_idx {
             0 => {
@@ -203,10 +209,6 @@ impl VirtioNet {
             }
             1 => {
                 // 送信用
-                if driver.idx == last_idx {
-                    return false;
-                }
-
                 let now_driver_idx = driver.idx;
 
                 let diff = driver.idx.wrapping_sub(last_idx);
