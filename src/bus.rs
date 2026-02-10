@@ -8,16 +8,17 @@ use crate::{
     AccessType, IRQ, Priv, Result, Trap,
     bus::{clint::Clint, plic::Plic, uart::Uart, virtio_gpu::VirtioGpu, virtio_net::VirtioNet},
     csr::Csr,
-    gpu::GpuMessage,
+    device::gpu::GpuMessage,
     memory::Memory,
 };
 
 mod clint;
 mod plic;
-mod uart;
-mod virtio_gpu;
-mod virtio_mmio;
-mod virtio_net;
+
+pub mod uart;
+pub mod virtio_gpu;
+pub mod virtio_mmio;
+pub mod virtio_net;
 
 pub const MEMORY_BASE: u32 = 0x80000000;
 pub const MEMORY_END: u32 = 0x90000000;
@@ -28,14 +29,14 @@ const CLINT_END: u32 = CLINT_BASE + 0x10000;
 const PLIC_BASE: u32 = 0xc000000;
 const PLIC_END: u32 = PLIC_BASE + 0x4000000;
 
-const UART_BASE: u32 = 0x10000000;
-const UART_END: u32 = UART_BASE + 0x100;
+pub const UART_BASE: u32 = 0x10000000;
+pub const UART_END: u32 = UART_BASE + 0x100;
 
-const VIRTIO_NET_BASE: u32 = 0x10008000;
-const VIRTIO_NET_END: u32 = VIRTIO_NET_BASE + 0x1000;
+pub const VIRTIO_NET_BASE: u32 = 0x10008000;
+pub const VIRTIO_NET_END: u32 = VIRTIO_NET_BASE + 0x1000;
 
-const VIRTIO_GPU_BASE: u32 = 0x10009000;
-const VIRTIO_GPU_END: u32 = VIRTIO_GPU_BASE + 0x801000;
+pub const VIRTIO_GPU_BASE: u32 = 0x10009000;
+pub const VIRTIO_GPU_END: u32 = VIRTIO_GPU_BASE + 0x801000;
 
 pub struct CpuContext<'a> {
     pub csr: &'a mut Csr,
@@ -104,40 +105,23 @@ impl<'a> CpuContext<'a> {
     }
 }
 
-impl Bus {
-    pub fn new(
-        uart_rx: Receiver<char>,
-        virtio_net_rx: Receiver<Vec<u8>>,
-        virtio_net_tx: Sender<Vec<u8>>,
-        virtio_gpu_tx: Sender<GpuMessage>,
-    ) -> Self {
+impl Default for Bus {
+    fn default() -> Self {
         let memory = Memory::default();
         let clint = Clint::default();
         let plic = Plic::default();
-
-        let mut devices = Vec::new();
-        devices.push(Device::new(
-            Box::new(Uart::new(uart_rx)),
-            UART_BASE..UART_END,
-        ));
-        devices.push(Device::new(
-            Box::new(VirtioNet::new(virtio_net_rx, virtio_net_tx)),
-            VIRTIO_NET_BASE..VIRTIO_NET_END,
-        ));
-        devices.push(Device::new(
-            Box::new(VirtioGpu::new(virtio_gpu_tx)),
-            VIRTIO_GPU_BASE..VIRTIO_GPU_END,
-        ));
 
         Self {
             memory,
             clint,
             plic,
-            devices,
+            devices: Vec::new(),
             irqs_to_raise: VecDeque::new(),
         }
     }
+}
 
+impl Bus {
     #[inline]
     pub fn read(&mut self, addr: u32, size: u32, ctx: CpuContext) -> Result<u32> {
         match addr {
@@ -201,6 +185,12 @@ impl Bus {
                 Err(ctx.make_trap())
             }
         }
+    }
+
+    pub fn add_device(&mut self, device: Device) -> &mut Self {
+        self.devices.push(device);
+
+        self
     }
 
     #[inline]

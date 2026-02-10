@@ -1,6 +1,8 @@
-use std::{error::Error, sync::mpsc::Receiver};
+use std::error::Error;
 
 use minifb::{Key, Window, WindowOptions};
+
+use crate::device::{GpuHostReciever, HostDevice};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -9,10 +11,10 @@ const HEIHGT: usize = 600;
 
 const BUFFER_SIZE: usize = WIDTH * HEIHGT;
 
-pub struct Gpu {
+pub struct HostGpu {
     buffer: Box<[u32; BUFFER_SIZE]>,
     resource_id: u32,
-    gpu_rx: Receiver<GpuMessage>,
+    gpu_rx: GpuHostReciever,
 }
 
 pub enum GpuOperation {
@@ -36,9 +38,16 @@ pub struct GpuMessage {
     pub buffer: Vec<u32>,
 }
 
-impl Gpu {
-    pub fn new(gpu_rx: Receiver<GpuMessage>) -> Self {
-        Gpu {
+impl HostDevice for HostGpu {
+    fn run(self: Box<Self>) {
+        let mut gpu = self;
+        HostGpu::run(&mut *gpu).unwrap();
+    }
+}
+
+impl HostGpu {
+    pub fn new(gpu_rx: GpuHostReciever) -> Self {
+        HostGpu {
             buffer: Box::new([0; BUFFER_SIZE]),
             resource_id: 0,
             gpu_rx,

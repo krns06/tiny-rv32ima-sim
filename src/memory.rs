@@ -8,7 +8,7 @@ use crate::{
 
 pub const MEMORY_SIZE: usize = 1024 * 1024 * 512;
 
-//[todo] Shared Memoryにする。
+#[derive(Debug)]
 pub struct Memory {
     pub array: Vec<u8>,
 }
@@ -133,10 +133,10 @@ impl Memory {
         is_over_memory
     }
 
-    pub fn load_flat_binary<const SIZE: usize>(&mut self, array: &[u8; SIZE], addr: u32) {
+    pub fn load_flat_binary(&mut self, array: &[u8], addr: u32) {
         let addr = addr as usize;
 
-        if SIZE > MEMORY_SIZE {
+        if array.len() > MEMORY_SIZE {
             panic!("[Error]: the program is too big.");
         }
 

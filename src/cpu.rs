@@ -1,14 +1,8 @@
-use std::sync::mpsc::{Receiver, Sender};
-use std::{fmt::Display, thread};
+use std::fmt::Display;
 
-use std::sync::mpsc;
-
-use crate::gpu::{Gpu, GpuMessage};
-use crate::net::run_net;
-use crate::shell::run_shell;
 use crate::{
     AccessType, Priv, Result, Trap,
-    bus::{Bus, CpuContext, MEMORY_BASE},
+    bus::{Bus, CpuContext},
     csr::Csr,
     illegal,
 };
@@ -93,15 +87,8 @@ pub struct Cpu {
 
     csr: Csr,
 
-    bus: Bus,
-
     reserved_addr: Option<u32>, // For LR.W or SC.W
     fault_addr: Option<u32>,
-
-    uart_tx: Sender<char>,
-    virtio_net_tx: Sender<Vec<u8>>,
-    virtio_net_rx: Option<Receiver<Vec<u8>>>, //[todo] 流石にやばいから治すべき
-    virtio_gpu_rx: Option<Receiver<GpuMessage>>,
 }
 
 impl Display for Cpu {
@@ -140,32 +127,14 @@ impl Default for Cpu {
         let regs = Registers::default();
         let csr = Csr::default();
 
-        let (virtio_gpu_tx, virtio_gpu_rx) = mpsc::channel();
-
-        let (uart_tx, uart_rx) = mpsc::channel();
-        let (virtio_net_input_tx, virtio_net_input_rx) = mpsc::channel();
-        let (virtio_net_output_tx, virtio_net_output_rx) = mpsc::channel();
-
-        let bus = Bus::new(
-            uart_rx,
-            virtio_net_input_rx,
-            virtio_net_output_tx,
-            virtio_gpu_tx,
-        );
-
         Self {
             prv,
             regs,
             pc: 0,
             inst: 0,
             csr,
-            bus,
             reserved_addr: None,
             fault_addr: None,
-            uart_tx,
-            virtio_net_tx: virtio_net_input_tx,
-            virtio_net_rx: Some(virtio_net_output_rx),
-            virtio_gpu_rx: Some(virtio_gpu_rx),
         }
     }
 }
@@ -183,7 +152,7 @@ impl Cpu {
         self.regs.write(reg, value)
     }
 
-    fn translate_va(&mut self, va: u32, access_type: AccessType) -> Result<u32> {
+    fn translate_va(&mut self, va: u32, access_type: AccessType, bus: &mut Bus) -> Result<u32> {
         if !self.csr.is_paging_enabled() {
             return Ok(va);
         }
@@ -222,7 +191,7 @@ impl Cpu {
             let vpn = (vpns >> (10 * i)) & 0x3ff;
             let pte_addr = addr + vpn * PTESIZE;
 
-            pte = self.bus.read(
+            pte = bus.read(
                 pte_addr,
                 4,
                 crate::bus::CpuContext {
@@ -306,60 +275,60 @@ impl Cpu {
     }
 
     #[inline]
-    pub fn read_memory(&mut self, addr: u32, size: u32) -> Result<u32> {
+    pub fn read_memory(&mut self, addr: u32, size: u32, bus: &mut Bus) -> Result<u32> {
         let access_type = AccessType::Read;
-        let pa = self.translate_va(addr, access_type)?;
+        let pa = self.translate_va(addr, access_type, bus)?;
         let ctx = CpuContext {
             csr: &mut self.csr,
             is_walk: false,
             access_type,
         };
 
-        self.bus.read(pa, size, ctx)
+        bus.read(pa, size, ctx)
     }
 
     #[inline]
-    pub fn read_memory_u8(&mut self, addr: u32) -> Result<u32> {
-        self.read_memory(addr, 1)
+    pub fn read_memory_u8(&mut self, addr: u32, bus: &mut Bus) -> Result<u32> {
+        self.read_memory(addr, 1, bus)
     }
 
     #[inline]
-    pub fn read_memory_u16(&mut self, addr: u32) -> Result<u32> {
-        self.read_memory(addr, 2)
+    pub fn read_memory_u16(&mut self, addr: u32, bus: &mut Bus) -> Result<u32> {
+        self.read_memory(addr, 2, bus)
     }
 
     #[inline]
-    pub fn read_memory_u32(&mut self, addr: u32) -> Result<u32> {
-        self.read_memory(addr, 4)
+    pub fn read_memory_u32(&mut self, addr: u32, bus: &mut Bus) -> Result<u32> {
+        self.read_memory(addr, 4, bus)
     }
 
     #[inline]
-    pub fn write_memory(&mut self, addr: u32, size: u32, value: u32) -> Result<()> {
+    pub fn write_memory(&mut self, addr: u32, size: u32, value: u32, bus: &mut Bus) -> Result<()> {
         let access_type = AccessType::Write;
 
-        let pa = self.translate_va(addr, access_type)?;
+        let pa = self.translate_va(addr, access_type, bus)?;
         let ctx = CpuContext {
             csr: &mut self.csr,
             is_walk: false,
             access_type,
         };
 
-        self.bus.write(pa, size, value, ctx)
+        bus.write(pa, size, value, ctx)
     }
 
     #[inline]
-    pub fn write_memory_u8(&mut self, addr: u32, value: u32) -> Result<()> {
-        self.write_memory(addr, 1, value)
+    pub fn write_memory_u8(&mut self, addr: u32, value: u32, bus: &mut Bus) -> Result<()> {
+        self.write_memory(addr, 1, value, bus)
     }
 
     #[inline]
-    pub fn write_memory_u16(&mut self, addr: u32, value: u32) -> Result<()> {
-        self.write_memory(addr, 2, value)
+    pub fn write_memory_u16(&mut self, addr: u32, value: u32, bus: &mut Bus) -> Result<()> {
+        self.write_memory(addr, 2, value, bus)
     }
 
     #[inline]
-    pub fn write_memory_u32(&mut self, addr: u32, value: u32) -> Result<()> {
-        self.write_memory(addr, 4, value)
+    pub fn write_memory_u32(&mut self, addr: u32, value: u32, bus: &mut Bus) -> Result<()> {
+        self.write_memory(addr, 4, value, bus)
     }
 
     #[inline]
@@ -372,61 +341,12 @@ impl Cpu {
         self.csr.write(csr, value, self.prv)
     }
 
-    pub fn run(&mut self) -> ! {
-        let virtio_gpu_rx = self.virtio_gpu_rx.take();
-
-        thread::spawn(move || {
-            let mut gpu = Gpu::new(virtio_gpu_rx.unwrap());
-
-            gpu.run();
-        });
-
-        let uart_tx = self.uart_tx.clone();
-
-        thread::spawn(move || {
-            run_shell(uart_tx).unwrap();
-        });
-
-        //[todo] もうちょっとちゃんと書き直したほうがいい
-        let virtio_net_tx = self.virtio_net_tx.clone();
-        let virtio_net_rx = self.virtio_net_rx.take();
-
-        thread::spawn(|| {
-            run_net("tap0", virtio_net_tx, virtio_net_rx.unwrap()).unwrap();
-        });
-
-        loop {
-            self.bus.tick(self.prv, &mut self.csr);
-
-            if let Some(e) = self.check_local_intrrupt_active() {
-                self.handle_trap(e);
-            }
-
-            match self.step() {
-                Err(e) => {
-                    self.handle_trap(e);
-                }
-                Ok(is_jump) => {
-                    self.csr.progress_instret();
-
-                    if !is_jump {
-                        // JUMP系の命令でない場合にPCを更新する。
-                        self.pc += 4;
-                    }
-                }
-            }
-
-            self.csr.progress_cycle();
-            self.csr.progress_time();
-        }
-    }
-
     // jump命令: Ok(true) 他の命令: Ok(false)
     // [todo] テストを通すためにテストで明示的に指定されるillegalな命令でillegal!を呼ぶが
     // テストが全て終わり、rv32imaの命令がすべて実装し終わったらunimplemented!をillegal!
     // に変更する。
     #[inline]
-    pub fn step(&mut self) -> Result<bool> {
+    pub fn step(&mut self, bus: &mut Bus) -> Result<bool> {
         macro_rules! reg {
             ($reg:expr) => {
                 self.read_reg($reg)
@@ -436,7 +356,7 @@ impl Cpu {
             };
         }
 
-        self.inst = self.fetch()?;
+        self.inst = self.fetch(bus)?;
 
         if self.inst == 0 {
             illegal!();
@@ -459,25 +379,25 @@ impl Cpu {
                     //[todo] refactor
                     0b000 => {
                         // LB
-                        let value = self.read_memory_u8(addr)?;
+                        let value = self.read_memory_u8(addr, bus)?;
                         (((value << 24) as i32) >> 24) as u32
                     }
                     0b001 => {
                         // LH
-                        let value = self.read_memory_u16(addr)?;
+                        let value = self.read_memory_u16(addr, bus)?;
                         (((value << 16) as i32) >> 16) as u32
                     }
                     0b010 => {
                         // LW
-                        self.read_memory_u32(addr)?
+                        self.read_memory_u32(addr, bus)?
                     }
                     0b100 => {
                         // LBU
-                        self.read_memory_u8(addr)?
+                        self.read_memory_u8(addr, bus)?
                     }
                     0b101 => {
                         // LHU
-                        self.read_memory_u16(addr)?
+                        self.read_memory_u16(addr, bus)?
                     }
                     _ => unimplemented!(),
                 };
@@ -561,19 +481,19 @@ impl Cpu {
                         //SB
                         let value = reg!(rs2) as u8;
 
-                        self.write_memory_u8(addr, value as u32)?;
+                        self.write_memory_u8(addr, value as u32, bus)?;
                     }
                     0b001 => {
                         // SH
                         let value = reg!(rs2) as u16;
 
-                        self.write_memory_u16(addr, value as u32)?;
+                        self.write_memory_u16(addr, value as u32, bus)?;
                     }
                     0b010 => {
                         // SW
                         let value = reg!(rs2);
 
-                        self.write_memory_u32(addr, value)?;
+                        self.write_memory_u32(addr, value, bus)?;
                     }
                     _ => unimplemented!(),
                 }
@@ -700,7 +620,7 @@ impl Cpu {
 
                 match (funct3, upper_funct7) {
                     (0b010, 0b00010) => {
-                        let value = self.read_memory_u32(addr)?;
+                        let value = self.read_memory_u32(addr, bus)?;
 
                         reg!(rd, value);
                         self.reserved_addr = Some(addr);
@@ -710,7 +630,7 @@ impl Cpu {
                         if let Some(reserved_addr) = self.reserved_addr
                             && reserved_addr == addr
                         {
-                            self.write_memory_u32(addr, reg!(rs2))?;
+                            self.write_memory_u32(addr, reg!(rs2), bus)?;
                             reg!(rd, 0);
                         } else {
                             reg!(rd, 1);
@@ -719,7 +639,7 @@ impl Cpu {
                         self.reserved_addr = None;
                     }
                     _ => {
-                        let original = self.read_memory_u32(addr)?;
+                        let original = self.read_memory_u32(addr, bus)?;
 
                         let value = match (funct3, upper_funct7) {
                             (0b010, 0b00000) => original.wrapping_add(reg!(rs2)), // AMOADD.W
@@ -735,7 +655,7 @@ impl Cpu {
                         };
 
                         reg!(rd, original);
-                        self.write_memory_u32(addr, value)?;
+                        self.write_memory_u32(addr, value, bus)?;
                     }
                 }
             }
@@ -924,7 +844,7 @@ impl Cpu {
 
                                     let spp = self.csr.handle_sret()?;
 
-                                    self.change_priv(spp.into());
+                                    self.change_prv(spp.into());
                                     self.pc = self.csr.sepc;
                                     is_jump = true;
                                 }
@@ -937,7 +857,7 @@ impl Cpu {
 
                                     let mpp = self.csr.handle_mret()?;
 
-                                    self.change_priv(mpp.into());
+                                    self.change_prv(mpp.into());
                                     self.pc = self.csr.mepc;
                                     is_jump = true;
                                 }
@@ -954,11 +874,11 @@ impl Cpu {
     }
 
     #[inline]
-    fn fetch(&mut self) -> Result<u32> {
-        let next_pc = self.translate_va(self.pc, AccessType::Fetch)?;
+    fn fetch(&mut self, bus: &mut Bus) -> Result<u32> {
+        let next_pc = self.translate_va(self.pc, AccessType::Fetch, bus)?;
 
         if next_pc % 4 == 0 {
-            let inst = self.bus.read(
+            let inst = bus.read(
                 next_pc,
                 4,
                 crate::bus::CpuContext {
@@ -977,7 +897,7 @@ impl Cpu {
     // [todo]: handle_{exception,intrrupt}をまとめてhandle_trapにする。
     //[todo] MMU実装時にself.csr.handle_trapに渡すvaを仮想アドレスを表すものに変更する。
     #[inline]
-    pub fn handle_trap(&mut self, e: Trap) {
+    pub fn handle_trap(&mut self, e: Trap, bus: &mut Bus) {
         let (next_pc, next_prv) = match e {
             Trap::UnimplementedCSR | Trap::UnimplementedInstruction => {
                 eprintln!("{:?}", e);
@@ -993,14 +913,14 @@ impl Cpu {
             }
             Trap::IlligalInstruction => self.csr.handle_trap(self.prv, e, self.pc, self.inst),
             Trap::SupervisorExternalInterrupt => {
-                self.prepare_external_interrupt();
+                self.prepare_external_interrupt(bus);
                 self.csr.handle_trap(self.prv, e, self.pc, 0)
             }
             _ => self.csr.handle_trap(self.prv, e, self.pc, 0),
         };
 
         self.pc = next_pc;
-        self.change_priv(next_prv);
+        self.change_prv(next_prv);
 
         //    if self.csr.time == 0x0d5e517f {
         //        panic!("break");
@@ -1009,8 +929,8 @@ impl Cpu {
     }
 
     #[inline]
-    pub fn prepare_external_interrupt(&mut self) {
-        self.bus.prepare_interrupt();
+    pub fn prepare_external_interrupt(&mut self, bus: &mut Bus) {
+        bus.prepare_interrupt();
     }
 
     // 割り込みが起こっているか確認する関数
@@ -1031,21 +951,26 @@ impl Cpu {
     }
 
     #[inline]
-    fn change_priv(&mut self, prv: Priv) {
+    pub fn prv(&self) -> Priv {
+        self.prv
+    }
+
+    #[inline]
+    pub fn mut_csr(&mut self) -> &mut Csr {
+        &mut self.csr
+    }
+
+    #[inline]
+    fn change_prv(&mut self, prv: Priv) {
         self.prv = prv;
     }
 
-    pub fn load_flat_binary<const SIZE: usize>(&mut self, array: &[u8; SIZE], addr: u32) {
-        self.bus.memory().load_flat_binary(array, addr);
+    #[inline]
+    pub fn progress_pc(&mut self) {
+        self.pc += 4;
     }
 
-    pub fn load_flat_program<const SIZE: usize>(&mut self, array: &[u8; SIZE]) {
-        self.load_flat_binary(array, MEMORY_BASE);
-        self.pc = MEMORY_BASE;
-    }
-
-    pub fn load_elf_program(&mut self, array: &[u8]) {
-        let entry_point = self.bus.memory().load_elf_binary(array);
-        self.pc = entry_point;
+    pub fn set_pc(&mut self, pc: u32) {
+        self.pc = pc;
     }
 }

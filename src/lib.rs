@@ -1,11 +1,10 @@
 mod bus;
 pub mod cpu;
 mod csr;
+mod device;
 mod elf;
-mod gpu;
 mod memory;
-mod net;
-mod shell;
+pub mod simulator;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AccessType {

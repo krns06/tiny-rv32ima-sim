@@ -8,7 +8,7 @@ use crate::{
             VirtioType, read_panic,
         },
     },
-    gpu::{GpuMessage, GpuOperation, GpuRect},
+    device::gpu::{GpuMessage, GpuOperation, GpuRect},
     memory::Memory,
 };
 

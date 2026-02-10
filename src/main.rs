@@ -3,7 +3,7 @@ use std::{
     io::{BufReader, Read},
 };
 
-use tiny_rv32ima_sim::cpu::Cpu;
+use tiny_rv32ima_sim::simulator::Simulator;
 
 const FW_SIZE: usize = 1024 * 1024;
 const DTB_SIZE: usize = 64 * 1024;
@@ -20,17 +20,16 @@ fn read_file(filename: &str, size: usize) -> Vec<u8> {
 }
 
 fn main() {
-    let mut cpu = Cpu::default();
+    let mut simulator = Simulator::new().setup_native_devices();
 
     let buf = read_file("firmware/fw_jump.bin", FW_SIZE);
-
-    cpu.load_flat_program::<FW_SIZE>(buf.as_slice().try_into().unwrap());
+    simulator.load_flat(&buf, 0x80000000);
 
     let buf = read_file("platform.dtb", DTB_SIZE);
-    cpu.load_flat_binary::<DTB_SIZE>(buf.as_slice().try_into().unwrap(), 0x80100000);
+    simulator.load_flat(&buf, 0x80100000);
 
     let buf = read_file("Image5", KERNEL_SIZE);
-    cpu.load_flat_binary::<KERNEL_SIZE>(buf.as_slice().try_into().unwrap(), 0x80400000);
+    simulator.load_flat(&buf, 0x80400000);
 
-    cpu.run();
+    simulator.set_entry_point(0x80000000).run();
 }
