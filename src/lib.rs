@@ -2,6 +2,7 @@ mod bus;
 pub mod cpu;
 mod csr;
 mod elf;
+mod gpu;
 mod memory;
 mod net;
 mod shell;
@@ -113,6 +114,7 @@ impl Trap {
 pub enum IRQ {
     None = 0,
     VirtioNet = 1,
+    VirtioGpu = 2,
     Uart = 0xa,
 }
 
@@ -121,6 +123,7 @@ impl From<usize> for IRQ {
         match value {
             0 => Self::None,
             1 => Self::VirtioNet,
+            2 => Self::VirtioGpu,
             0xa => Self::Uart,
             _ => unreachable!(),
         }

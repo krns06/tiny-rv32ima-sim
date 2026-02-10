@@ -6,6 +6,7 @@ use crate::{
 };
 
 pub const VIRTIO_REG_QUEUE_READY: u32 = 0x44;
+pub const VIRTIO_REG_NOTIFY: u32 = 0x50;
 pub const VIRTIO_REG_STATUS: u32 = 0x70;
 pub const VIRTIO_REG_CONFIG: u32 = 0x100;
 
@@ -18,6 +19,7 @@ pub const VIRTIO_QUEUE_DEVICE_ELEM_SIZE: usize = size_of::<VirtQueueDeviceElem>(
 #[derive(Debug, Clone, Copy)]
 pub enum VirtioType {
     Network = 1,
+    Gpu = 16,
 }
 
 type FeatureType = [u32; 4];
@@ -38,6 +40,7 @@ pub struct VirtioMmio {
     desc_addrs: Vec<u64>,
     driver_addrs: Vec<u64>,
     device_addrs: Vec<u64>,
+    shm_sel: u32,
 }
 
 #[derive(Debug)]
@@ -100,6 +103,7 @@ impl VirtioMmio {
             desc_addrs,
             driver_addrs,
             device_addrs,
+            shm_sel: 0,
         }
     }
 
@@ -199,6 +203,7 @@ impl VirtioMmio {
                     unimplemented!();
                 }
             } // Queue Device High
+            0xac => self.shm_sel = value,
             _ => write_panic(offset, value),
         }
 
@@ -222,6 +227,10 @@ impl VirtioMmio {
 
     pub fn device_addr(&self, queue_idx: u32) -> usize {
         self.device_addrs[queue_idx as usize] as usize
+    }
+
+    pub fn shm_sel(&self) -> usize {
+        self.shm_sel as usize
     }
 
     pub fn driver<const L: usize>(

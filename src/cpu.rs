@@ -3,6 +3,7 @@ use std::{fmt::Display, thread};
 
 use std::sync::mpsc;
 
+use crate::gpu::{Gpu, GpuMessage};
 use crate::net::run_net;
 use crate::shell::run_shell;
 use crate::{
@@ -98,8 +99,9 @@ pub struct Cpu {
     fault_addr: Option<u32>,
 
     uart_tx: Sender<char>,
-    virtio_net_input_tx: Sender<Vec<u8>>,
-    virtio_net_output_rx: Option<Receiver<Vec<u8>>>, //[todo] 流石にやばいから治すべき
+    virtio_net_tx: Sender<Vec<u8>>,
+    virtio_net_rx: Option<Receiver<Vec<u8>>>, //[todo] 流石にやばいから治すべき
+    virtio_gpu_rx: Option<Receiver<GpuMessage>>,
 }
 
 impl Display for Cpu {
@@ -138,12 +140,18 @@ impl Default for Cpu {
         let regs = Registers::default();
         let csr = Csr::default();
 
-        let (uart_tx, uart_rx) = mpsc::channel();
+        let (virtio_gpu_tx, virtio_gpu_rx) = mpsc::channel();
 
+        let (uart_tx, uart_rx) = mpsc::channel();
         let (virtio_net_input_tx, virtio_net_input_rx) = mpsc::channel();
         let (virtio_net_output_tx, virtio_net_output_rx) = mpsc::channel();
 
-        let bus = Bus::new(uart_rx, virtio_net_input_rx, virtio_net_output_tx);
+        let bus = Bus::new(
+            uart_rx,
+            virtio_net_input_rx,
+            virtio_net_output_tx,
+            virtio_gpu_tx,
+        );
 
         Self {
             prv,
@@ -155,8 +163,9 @@ impl Default for Cpu {
             reserved_addr: None,
             fault_addr: None,
             uart_tx,
-            virtio_net_input_tx,
-            virtio_net_output_rx: Some(virtio_net_output_rx),
+            virtio_net_tx: virtio_net_input_tx,
+            virtio_net_rx: Some(virtio_net_output_rx),
+            virtio_gpu_rx: Some(virtio_gpu_rx),
         }
     }
 }
@@ -364,6 +373,14 @@ impl Cpu {
     }
 
     pub fn run(&mut self) -> ! {
+        let virtio_gpu_rx = self.virtio_gpu_rx.take();
+
+        thread::spawn(move || {
+            let mut gpu = Gpu::new(virtio_gpu_rx.unwrap());
+
+            gpu.run();
+        });
+
         let uart_tx = self.uart_tx.clone();
 
         thread::spawn(move || {
@@ -371,8 +388,8 @@ impl Cpu {
         });
 
         //[todo] もうちょっとちゃんと書き直したほうがいい
-        let virtio_net_tx = self.virtio_net_input_tx.clone();
-        let virtio_net_rx = self.virtio_net_output_rx.take();
+        let virtio_net_tx = self.virtio_net_tx.clone();
+        let virtio_net_rx = self.virtio_net_rx.take();
 
         thread::spawn(|| {
             run_net("tap0", virtio_net_tx, virtio_net_rx.unwrap()).unwrap();

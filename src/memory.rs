@@ -1,3 +1,5 @@
+use std::mem::transmute;
+
 use crate::{
     AccessType, Result,
     bus::MEMORY_BASE,
@@ -6,6 +8,7 @@ use crate::{
 
 pub const MEMORY_SIZE: usize = 1024 * 1024 * 512;
 
+//[todo] Shared Memoryにする。
 pub struct Memory {
     pub array: Vec<u8>,
 }
@@ -94,11 +97,36 @@ impl Memory {
     }
 
     #[inline]
+    pub fn view_as<T>(&self, addr: usize, len: usize) -> &T {
+        let size = size_of::<T>();
+
+        if size > len {
+            panic!("[ERROR] len(0x{:x}) > size(0x{:x})", len, size);
+        }
+
+        let ptr = self.raw_ptr(addr, size);
+
+        unsafe { transmute(ptr.as_ptr()) }
+    }
+
+    #[inline]
     pub fn raw_mut_ptr(&mut self, addr: usize, size: usize) -> &mut [u8] {
         let offset = addr - MEMORY_BASE as usize;
         &mut self.array[offset..offset + size]
     }
 
+    #[inline]
+    pub fn mut_view_as<T>(&mut self, addr: usize, len: usize) -> &mut T {
+        let size = size_of::<T>();
+
+        if size > len {
+            panic!("[ERROR] len(0x{:x}) > size(0x{:x})", len, size);
+        }
+
+        let ptr = self.raw_mut_ptr(addr, size);
+
+        unsafe { transmute(ptr.as_ptr()) }
+    }
     fn is_invalid_range(&self, address: usize, size: usize) -> bool {
         let is_over_memory = address + size > MEMORY_SIZE;
 

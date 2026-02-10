@@ -6,14 +6,16 @@ use std::{
 
 use crate::{
     AccessType, IRQ, Priv, Result, Trap,
-    bus::{clint::Clint, plic::Plic, uart::Uart, virtio_net::VirtioNet},
+    bus::{clint::Clint, plic::Plic, uart::Uart, virtio_gpu::VirtioGpu, virtio_net::VirtioNet},
     csr::Csr,
+    gpu::GpuMessage,
     memory::Memory,
 };
 
 mod clint;
 mod plic;
 mod uart;
+mod virtio_gpu;
 mod virtio_mmio;
 mod virtio_net;
 
@@ -31,6 +33,9 @@ const UART_END: u32 = UART_BASE + 0x100;
 
 const VIRTIO_NET_BASE: u32 = 0x10008000;
 const VIRTIO_NET_END: u32 = VIRTIO_NET_BASE + 0x1000;
+
+const VIRTIO_GPU_BASE: u32 = 0x10009000;
+const VIRTIO_GPU_END: u32 = VIRTIO_GPU_BASE + 0x801000;
 
 pub struct CpuContext<'a> {
     pub csr: &'a mut Csr,
@@ -104,6 +109,7 @@ impl Bus {
         uart_rx: Receiver<char>,
         virtio_net_rx: Receiver<Vec<u8>>,
         virtio_net_tx: Sender<Vec<u8>>,
+        virtio_gpu_tx: Sender<GpuMessage>,
     ) -> Self {
         let memory = Memory::default();
         let clint = Clint::default();
@@ -117,6 +123,10 @@ impl Bus {
         devices.push(Device::new(
             Box::new(VirtioNet::new(virtio_net_rx, virtio_net_tx)),
             VIRTIO_NET_BASE..VIRTIO_NET_END,
+        ));
+        devices.push(Device::new(
+            Box::new(VirtioGpu::new(virtio_gpu_tx)),
+            VIRTIO_GPU_BASE..VIRTIO_GPU_END,
         ));
 
         Self {
@@ -143,6 +153,7 @@ impl Bus {
                         let offset = addr - self.devices[i].range.start;
                         let res = self.devices[i]
                             .device
+                            //[todo] read内でaccess_type事に例外を出すように変更する。
                             .read(offset, size, &mut self.memory)?;
 
                         if res.is_interrupting {

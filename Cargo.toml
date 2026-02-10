@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 termion = "4.0.6"
 nix = {version = "0.31.1", features=["ioctl"]}
+minifb = "0.28"
 
