@@ -1,7 +1,7 @@
 # tiny-rv32ima-sim
 rv32imaのriscvシミュレータ
-![console](console.gif)
-![gui](gui.gif)
+![console](statics/console.gif)
+![gui](statics/gui.gif)
 
 ## Goals
 - [X] OpenSBIのブート
