@@ -303,7 +303,7 @@ fn format_array(format: u32, array: &mut [u8]) {
         let r = chunk[2];
 
         chunk[0] = r;
-        chunk[1] = b;
+        chunk[2] = b;
         chunk[3] = 0xff;
     }
 }
