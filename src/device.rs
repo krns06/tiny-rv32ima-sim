@@ -1,14 +1,16 @@
 use std::{
     error::Error,
+    fmt::Debug,
     sync::mpsc::{Receiver, Sender},
 };
 
-use crate::device::gpu::GpuMessage;
-
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod gpu;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod net;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod shell;
 
 pub type UartGustReciever = Receiver<char>;
@@ -23,11 +25,15 @@ pub type NetHostSender = Sender<Vec<u8>>;
 pub type GpuGuestSender = Sender<GpuMessage>;
 pub type GpuHostReciever = Receiver<GpuMessage>;
 
-pub trait HostDevice: Send {
+#[cfg(not(target_arch = "wasm32"))]
+pub trait HostDevice: Send + Debug {
     fn run(self: Box<Self>);
 }
 
-#[derive(Default)]
+#[cfg(target_arch = "wasm32")]
+pub trait HostDevice: Debug {}
+
+#[derive(Default, Debug)]
 pub struct DeviceManager {
     devices: Vec<Box<dyn HostDevice>>,
 }
@@ -41,5 +47,49 @@ impl DeviceManager {
         self.devices.push(device);
 
         self
+    }
+}
+
+#[derive(Debug)]
+pub enum GpuOperation {
+    Copy,
+    Disable,
+    Flush,
+}
+
+#[derive(Debug, Default)]
+pub struct GpuRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl GpuRect {
+    fn start(&self) -> usize {
+        (self.x + self.y * self.width) as usize
+    }
+
+    fn end(&self) -> usize {
+        self.start() + (self.width * self.height) as usize
+    }
+}
+
+#[derive(Debug)]
+pub struct GpuMessage {
+    pub operation: GpuOperation,
+    pub resource_id: u32,
+    pub rect: GpuRect,
+    pub buffer: Vec<u32>,
+}
+
+impl GpuMessage {
+    pub fn new(operation: GpuOperation, resource_id: u32) -> Self {
+        Self {
+            operation,
+            resource_id,
+            rect: GpuRect::default(),
+            buffer: Vec::new(),
+        }
     }
 }

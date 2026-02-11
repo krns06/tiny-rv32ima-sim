@@ -1,4 +1,4 @@
-use std::{collections::HashMap, mem::transmute, sync::mpsc::Sender};
+use std::{collections::HashMap, mem::transmute};
 
 use crate::{
     bus::{
@@ -8,9 +8,14 @@ use crate::{
             VirtioType, read_panic,
         },
     },
-    device::gpu::{GpuMessage, GpuOperation, GpuRect},
+    device::{GpuGuestSender, GpuMessage, GpuOperation, GpuRect},
     memory::Memory,
 };
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::Clamped;
+#[cfg(target_arch = "wasm32")]
+use web_sys::{CanvasRenderingContext2d, ImageData};
 
 const VIRTIO_GPU_HEADER_SIZE: usize = size_of::<VirtioGpuCtrlHeader>();
 const VIRTIO_GPU_RESP_DISPLAY_INFO_SIZE: usize = size_of::<VirtioGpuRespDisplayInfo>();
@@ -43,7 +48,12 @@ pub struct VirtioGpu {
     resources: HashMap<u32, GpuResouce>,
     scanouts: [GpuScanout; MAX_SCANOUTS as usize],
 
-    output_tx: Sender<GpuMessage>,
+    #[cfg(not(target_arch = "wasm32"))]
+    output_tx: GpuGuestSender,
+
+    //[todo] WASMにはThreadがないっぽいが出力部分に送る実装にすべきな気がする。
+    #[cfg(target_arch = "wasm32")]
+    canvas_ctx: CanvasRenderingContext2d,
 }
 
 #[derive(Debug)]
@@ -260,6 +270,8 @@ fn write_ok_nodata_response(dst_desc: &VirtQueueDesc, memory: &mut Memory) -> u3
 
 // XRGBに変換する関数
 // format = 2(RGBX)のみサポート
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
 fn format_array(format: u32, array: &[u8]) -> Vec<u32> {
     if format != 2 {
         unimplemented!()
@@ -277,8 +289,28 @@ fn format_array(format: u32, array: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+// ABGRに変換する関数
+// format = 2(RGBX)のみサポート
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn format_array(format: u32, array: &mut [u8]) {
+    if format != 2 {
+        unimplemented!()
+    }
+
+    for chunk in array.chunks_exact_mut(4) {
+        let b = chunk[0];
+        let r = chunk[2];
+
+        chunk[0] = r;
+        chunk[1] = b;
+        chunk[3] = 0xff;
+    }
+}
+
 impl VirtioGpu {
-    pub fn new(output_tx: Sender<GpuMessage>) -> Self {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new(output_tx: GpuGuestSender) -> Self {
         let virtio = VirtioMmio::new(VirtioType::Gpu, FEATURES, 2, MAX_QUEUE_SIZE as u32);
 
         Self {
@@ -290,10 +322,31 @@ impl VirtioGpu {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn new(canvas_ctx: CanvasRenderingContext2d) -> Self {
+        let virtio = VirtioMmio::new(VirtioType::Gpu, FEATURES, 2, MAX_QUEUE_SIZE as u32);
+
+        Self {
+            virtio,
+            last_idxes: [0; 2],
+            resources: HashMap::new(),
+            canvas_ctx,
+            scanouts: [GpuScanout::default()],
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn reset(&mut self) {
         let output_tx = self.output_tx.clone();
 
         *self = Self::new(output_tx);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn reset(&mut self) {
+        let canvas_ctx = self.canvas_ctx.clone();
+
+        *self = Self::new(canvas_ctx);
     }
 
     fn handle_notify(&mut self, queue_idx: u32, memory: &mut Memory) -> bool {
@@ -425,8 +478,16 @@ impl VirtioGpu {
                     let resource_id = set_scanout.resource_id;
 
                     if resource_id == 0 {
-                        let message = GpuMessage::new(GpuOperation::Disable, resource_id);
-                        self.output_tx.send(message).unwrap();
+                        // Disable
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            let message = GpuMessage::new(GpuOperation::Disable, resource_id);
+                            self.output_tx.send(message).unwrap();
+                        }
+
+                        //[todo] wasmの場合のDisalbe
+                        #[cfg(target_arch = "wasm32")]
+                        {}
                     } else {
                         if set_scanout.scanout_id > MAX_SCANOUTS {
                             unimplemented!();
@@ -441,6 +502,7 @@ impl VirtioGpu {
                     write_ok_nodata_response(second_desc, memory)
                 }
                 VirtioGpuCtrlType::CmdTransferToHost2D => {
+                    // [todo] 現在のところ２~3回コピーしているので１回でできるようにする。
                     if second_desc.is_next() || !second_desc.is_write_only() {
                         unimplemented!();
                     }
@@ -454,8 +516,8 @@ impl VirtioGpu {
                         unimplemented!();
                     }
 
-                    let array_size = SUPPORTED_RECT.size();
-                    let mut array = vec![0; array_size];
+                    let buffer_size = SUPPORTED_RECT.size();
+                    let mut buffer = vec![0; buffer_size];
 
                     let resource_id = transfer_to_host_2d.resource_id;
                     let resource = self.resources.get(&resource_id).unwrap();
@@ -466,27 +528,44 @@ impl VirtioGpu {
                         let entry_len = entry.length as usize;
                         let entry_ptr = memory.raw_ptr(entry.addr as usize, entry_len);
 
-                        let actual_len = if copied_size + entry_len > array_size {
-                            array_size - copied_size
+                        let actual_len = if copied_size + entry_len > buffer_size {
+                            buffer_size - copied_size
                         } else {
                             entry_len
                         };
 
-                        array[copied_size..copied_size + actual_len]
+                        buffer[copied_size..copied_size + actual_len]
                             .copy_from_slice(&entry_ptr[..actual_len]);
                         copied_size += actual_len;
                     }
 
-                    let buffer = format_array(resource.format, &array);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        let buffer = format_array(resource.format, &buffer);
+                        let message = GpuMessage {
+                            operation: GpuOperation::Copy,
+                            resource_id,
+                            rect: GpuRect::from(transfer_to_host_2d.r),
+                            buffer,
+                        };
 
-                    let message = GpuMessage {
-                        operation: GpuOperation::Copy,
-                        resource_id,
-                        rect: GpuRect::from(transfer_to_host_2d.r),
-                        buffer,
-                    };
+                        self.output_tx.send(message).unwrap();
+                    }
 
-                    self.output_tx.send(message).unwrap();
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        format_array(resource.format, &mut array);
+
+                        let image_data = ImageData::new_with_u8_clamped_array_and_sh(
+                            Clamped(&array),
+                            resource.width,
+                            resource.height,
+                        )
+                        .unwrap();
+                        self.canvas_ctx
+                            .put_image_data(&image_data, resource.x as f64, resource.y as f64)
+                            .unwrap();
+                    }
 
                     write_ok_nodata_response(second_desc, memory)
                 }
@@ -504,14 +583,21 @@ impl VirtioGpu {
                         unimplemented!();
                     }
 
-                    let message = GpuMessage {
-                        operation: GpuOperation::Flush,
-                        resource_id: resource_flush.resource_id,
-                        rect: GpuRect::from(resource_flush.r),
-                        buffer: Vec::new(),
-                    };
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        let message = GpuMessage {
+                            operation: GpuOperation::Flush,
+                            resource_id: resource_flush.resource_id,
+                            rect: GpuRect::from(resource_flush.r),
+                            buffer: Vec::new(),
+                        };
 
-                    self.output_tx.send(message).unwrap();
+                        self.output_tx.send(message).unwrap();
+                    }
+
+                    //[todo] wasmの場合のFlush
+                    #[cfg(target_arch = "wasm32")]
+                    {}
 
                     write_ok_nodata_response(second_desc, memory)
                 }
@@ -571,6 +657,7 @@ impl From<VirtioGpuRect> for GpuRect {
 }
 
 impl VirtioGpuRect {
+    // バイトごと
     pub const fn size(&self) -> usize {
         (self.width * self.height * SUPPORTED_SLIDE_SIZE) as usize
     }

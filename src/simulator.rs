@@ -1,4 +1,7 @@
-use std::{error::Error, marker::PhantomData, sync::mpsc, thread};
+use std::marker::PhantomData;
+
+#[cfg(target_arch = "wasm32")]
+use web_sys::CanvasRenderingContext2d;
 
 use crate::{
     bus::{
@@ -6,10 +9,14 @@ use crate::{
         VIRTIO_NET_END, uart::Uart, virtio_gpu::VirtioGpu, virtio_net::VirtioNet,
     },
     cpu::Cpu,
-    device::{DeviceManager, gpu::HostGpu, net::HostNet, shell::Shell},
+    device::DeviceManager,
 };
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
+#[cfg(not(target_arch = "wasm32"))]
+use std::{sync::mpsc, thread};
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::device::{gpu::HostGpu, net::HostNet, shell::Shell};
 
 pub struct Simulator<T> {
     cpu: Cpu,
@@ -20,12 +27,18 @@ pub struct Simulator<T> {
 
 pub struct Initial;
 pub struct NativeSetup;
+pub struct WasmSetup;
 
-pub struct Loaded;
+pub struct NativeLoaded;
+pub struct WasmLoaded;
 
 impl<T> Simulator<T> {
     pub fn load_flat(&mut self, array: &[u8], addr: u32) {
         self.bus.memory().load_flat_binary(array, addr);
+    }
+
+    pub fn cpu(&self) -> &Cpu {
+        &self.cpu
     }
 }
 
@@ -40,6 +53,7 @@ impl Simulator<Initial> {
     }
 
     // native
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn setup_native_devices(mut self) -> Simulator<NativeSetup> {
         let (uart_tx, uart_rx) = mpsc::channel();
 
@@ -87,10 +101,32 @@ impl Simulator<Initial> {
     }
 
     // wasm
+    #[cfg(target_arch = "wasm32")]
+    pub fn setup_wasm_devices(
+        mut self,
+        canvas_ctx: CanvasRenderingContext2d,
+    ) -> Simulator<WasmSetup> {
+        let uart = Device::new(Box::new(Uart::new()), UART_BASE..UART_END);
+
+        let virtio_gpu = Device::new(
+            Box::new(VirtioGpu::new(canvas_ctx)),
+            VIRTIO_GPU_BASE..VIRTIO_GPU_END,
+        );
+
+        self.bus.add_device(uart).add_device(virtio_gpu);
+
+        Simulator {
+            cpu: self.cpu,
+            bus: self.bus,
+            device_manager: self.device_manager,
+            _marker: PhantomData,
+        }
+    }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Simulator<NativeSetup> {
-    pub fn set_entry_point(mut self, entry_point: u32) -> Simulator<Loaded> {
+    pub fn set_entry_point(mut self, entry_point: u32) -> Simulator<NativeLoaded> {
         self.cpu.set_pc(entry_point);
 
         Simulator {
@@ -102,7 +138,22 @@ impl Simulator<NativeSetup> {
     }
 }
 
-impl Simulator<Loaded> {
+#[cfg(target_arch = "wasm32")]
+impl Simulator<WasmSetup> {
+    pub fn set_entry_point(mut self, entry_point: u32) -> Simulator<WasmLoaded> {
+        self.cpu.set_pc(entry_point);
+
+        Simulator {
+            cpu: self.cpu,
+            bus: self.bus,
+            device_manager: self.device_manager,
+            _marker: PhantomData,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Simulator<NativeLoaded> {
     pub fn run(mut self) {
         let device_manager = self.device_manager.take().unwrap();
 
@@ -133,5 +184,32 @@ impl Simulator<Loaded> {
             self.cpu.mut_csr().progress_cycle();
             self.cpu.mut_csr().progress_time();
         }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Simulator<WasmLoaded> {
+    pub fn step(&mut self) {
+        self.bus.tick(self.cpu.prv(), self.cpu.mut_csr());
+
+        if let Some(e) = self.cpu.check_local_intrrupt_active() {
+            self.cpu.handle_trap(e, &mut self.bus);
+        }
+
+        match self.cpu.step(&mut self.bus) {
+            Err(e) => {
+                self.cpu.handle_trap(e, &mut self.bus);
+            }
+            Ok(is_jump) => {
+                self.cpu.mut_csr().progress_instret();
+
+                if !is_jump {
+                    self.cpu.progress_pc();
+                }
+            }
+        }
+
+        self.cpu.mut_csr().progress_cycle();
+        self.cpu.mut_csr().progress_time();
     }
 }

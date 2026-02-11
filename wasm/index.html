@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>tiny-rv32ima-sim</title>
+    <meta charset="utf-8">
+  </head>
+  <body>
+    <div style="display: flex;">
+      <canvas id="canvas" width="800" height="600"></canvas>
+      
+      <div id="serial-console" style="
+        width: 960px;
+        height: 600px;
+        background-color: #1e1e1e;
+        color: #00ff00;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 12px;
+        padding: 10px;
+        overflow-y: scroll;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        border: 2px solid #444;
+      "></div>
+    </div>
+    <canvas id="canvas" width="800" height="600"></canvas>
+
+    <script type="module">
+    import init, { WasmSimulator } from '../pkg/tiny_rv32ima_sim.js';
+
+      const consoleElem = document.getElementById("serial-console");
+
+
+      window.append_console = function(char) {
+            if (consoleElem) {
+                consoleElem.textContent += String.fromCharCode(char);
+                consoleElem.scrollTop = consoleElem.scrollHeight;
+            }
+        };
+
+    async function run() {
+      await init();
+
+      const sim = new WasmSimulator("canvas");
+
+      function loop() {
+        sim.step();
+
+        requestAnimationFrame(loop);
+      }
+      console.log("Starting emulator loop...");
+      loop();
+    }
+
+  run();
+</script>
+  </body>
+</html>

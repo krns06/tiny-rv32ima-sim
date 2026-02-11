@@ -13,6 +13,7 @@ use crate::device::{HostDevice, NetHostReceiver, NetHostSender};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+#[derive(Debug)]
 pub struct HostNet {
     net_rx: NetHostReceiver,
     net_tx: NetHostSender,

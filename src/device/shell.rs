@@ -10,6 +10,7 @@ use crate::device::{HostDevice, UartHostSender};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+#[derive(Debug)]
 pub struct Shell {
     uart_tx: UartHostSender,
 }

@@ -1,7 +1,4 @@
-use std::{
-    mem::transmute,
-    sync::mpsc::{Receiver, Sender},
-};
+use std::mem::transmute;
 
 use crate::{
     bus::{
@@ -11,6 +8,7 @@ use crate::{
             read_panic,
         },
     },
+    device::{NetGuestReceiver, NetGuestSender},
     memory::Memory,
 };
 
@@ -29,8 +27,8 @@ pub struct VirtioNet {
 
     last_idxes: [u16; 2],
 
-    input_rx: Option<Receiver<Vec<u8>>>, //[todo] 将来的にはここは変更しないといけない
-    output_tx: Sender<Vec<u8>>,
+    input_rx: Option<NetGuestReceiver>, //[todo] 将来的にはここは変更しないといけない
+    output_tx: NetGuestSender,
 }
 
 #[derive(Debug, Default)]
@@ -170,7 +168,7 @@ impl ExternalDevice for VirtioNet {
 }
 
 impl VirtioNet {
-    pub fn new(input_rx: Receiver<Vec<u8>>, output_tx: Sender<Vec<u8>>) -> Self {
+    pub fn new(input_rx: NetGuestReceiver, output_tx: NetGuestSender) -> Self {
         // MACとVIRTIO_F_VERSION_1
         // キューは送信用と受信用
         let virtio = VirtioMmio::new(VirtioType::Network, FEATURES, 2, MAX_QUEUE_SIZE as u32);

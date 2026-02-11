@@ -1,11 +1,14 @@
 use std::io::Write;
-use std::sync::mpsc::Receiver;
 
 use crate::{
     Result,
     bus::{ExternalDevice, ExternalDeviceResponse},
+    device::UartGustReciever,
     memory::Memory,
 };
+
+#[cfg(target_arch = "wasm32")]
+use crate::wasm::log;
 
 const IER_ERBFI: u8 = 1; // 受け取ったときの例外のIEのbit
 const IER_ETBEI: u8 = 0x2; // 出力したときの例外のIEのbit
@@ -33,7 +36,9 @@ pub struct Uart {
     is_taken_interrupt: bool,
 
     input_buf: Vec<char>,
-    input_rx: Receiver<char>,
+
+    #[cfg(not(target_arch = "wasm32"))]
+    input_rx: UartGustReciever,
 }
 
 impl ExternalDevice for Uart {
@@ -125,8 +130,18 @@ impl ExternalDevice for Uart {
                 } else {
                     // THR
                     let c = value as u8;
-                    print!("{}", c as char);
-                    std::io::stdout().flush().unwrap();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        print!("{}", c as char);
+                        std::io::stdout().flush().unwrap();
+                    }
+
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        use crate::wasm::append_console;
+
+                        append_console(c);
+                    }
 
                     if self.ier & IER_ETBEI != 0 {
                         self.raise_interrupt(IIR_THRE);
@@ -174,6 +189,7 @@ impl ExternalDevice for Uart {
         self.is_taken_interrupt = true;
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[inline]
     fn tick(&mut self, _: &mut Memory) -> bool {
         if let Ok(c) = self.input_rx.try_recv() {
@@ -193,10 +209,28 @@ impl ExternalDevice for Uart {
 
         false
     }
+
+    #[cfg(target_arch = "wasm32")]
+    #[inline]
+    fn tick(&mut self, _: &mut Memory) -> bool {
+        if self.input_buf != Vec::new() && self.is_ready_for_recieving() {
+            if let Some(c) = self.input_buf.pop() {
+                self.push_char(c);
+                return true;
+            }
+
+            if self.input_buf == Vec::new() {
+                return false;
+            }
+        }
+
+        false
+    }
 }
 
 impl Uart {
-    pub fn new(input_rx: Receiver<char>) -> Self {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new(input_rx: UartGustReciever) -> Self {
         let input_buf = Vec::new();
 
         Uart {
@@ -210,7 +244,26 @@ impl Uart {
             is_interrupting: false,
             is_taken_interrupt: false,
             input_buf,
+
             input_rx,
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn new() -> Self {
+        let input_buf = Vec::new();
+
+        Uart {
+            lcr: 0,
+            dlm: 0,
+            dll: 0,
+            lsr: LSR_TEMT | LSR_THRE,
+            ier: 0,
+            rbr: 0,
+            iir: IIR_NIP,
+            is_interrupting: false,
+            is_taken_interrupt: false,
+            input_buf,
         }
     }
 

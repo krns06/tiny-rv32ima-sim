@@ -2,7 +2,7 @@ use std::error::Error;
 
 use minifb::{Key, Window, WindowOptions};
 
-use crate::device::{GpuHostReciever, HostDevice};
+use crate::device::{GpuHostReciever, GpuOperation, HostDevice};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -11,31 +11,11 @@ const HEIHGT: usize = 600;
 
 const BUFFER_SIZE: usize = WIDTH * HEIHGT;
 
+#[derive(Debug)]
 pub struct HostGpu {
     buffer: Box<[u32; BUFFER_SIZE]>,
     resource_id: u32,
     gpu_rx: GpuHostReciever,
-}
-
-pub enum GpuOperation {
-    Copy,
-    Disable,
-    Flush,
-}
-
-#[derive(Default)]
-pub struct GpuRect {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
-}
-
-pub struct GpuMessage {
-    pub operation: GpuOperation,
-    pub resource_id: u32,
-    pub rect: GpuRect,
-    pub buffer: Vec<u32>,
 }
 
 impl HostDevice for HostGpu {
@@ -88,26 +68,5 @@ impl HostGpu {
         }
 
         Ok(())
-    }
-}
-
-impl GpuRect {
-    fn start(&self) -> usize {
-        (self.x + self.y * self.width) as usize
-    }
-
-    fn end(&self) -> usize {
-        self.start() + (self.width * self.height) as usize
-    }
-}
-
-impl GpuMessage {
-    pub fn new(operation: GpuOperation, resource_id: u32) -> Self {
-        Self {
-            operation,
-            resource_id,
-            rect: GpuRect::default(),
-            buffer: Vec::new(),
-        }
     }
 }

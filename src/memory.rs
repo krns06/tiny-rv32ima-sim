@@ -6,7 +6,8 @@ use crate::{
     elf::{Elf32Ehdr, Elf32Phdr},
 };
 
-pub const MEMORY_SIZE: usize = 1024 * 1024 * 512;
+// pub const MEMORY_SIZE: usize = 1024 * 1024 * 512;
+pub const MEMORY_SIZE: usize = 1024 * 1024 * 128;
 
 #[derive(Debug)]
 pub struct Memory {

@@ -1,14 +1,9 @@
-use std::{
-    collections::VecDeque,
-    ops::Range,
-    sync::mpsc::{Receiver, Sender},
-};
+use std::{collections::VecDeque, ops::Range};
 
 use crate::{
     AccessType, IRQ, Priv, Result, Trap,
-    bus::{clint::Clint, plic::Plic, uart::Uart, virtio_gpu::VirtioGpu, virtio_net::VirtioNet},
+    bus::{clint::Clint, plic::Plic},
     csr::Csr,
-    device::gpu::GpuMessage,
     memory::Memory,
 };
 
