@@ -36,13 +36,13 @@ impl WasmSimulator {
 
         let mut simulator = Simulator::new().setup_wasm_devices(context);
 
-        let buf = include_bytes!("../firmware/fw_jump.bin");
+        let buf = include_bytes!("../statics/fw_jump.bin");
         simulator.load_flat(buf, 0x80000000);
 
-        let buf = include_bytes!("../platform.dtb");
+        let buf = include_bytes!("../statics/platform.dtb");
         simulator.load_flat(&buf.as_slice(), 0x80100000);
 
-        let buf = include_bytes!("../Image5");
+        let buf = include_bytes!("../statics/Image");
         simulator.load_flat(&buf.as_slice(), 0x80400000);
 
         Self {
