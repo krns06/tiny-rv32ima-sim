@@ -554,16 +554,18 @@ impl VirtioGpu {
 
                     #[cfg(target_arch = "wasm32")]
                     {
-                        format_array(resource.format, &mut array);
+                        format_array(resource.format, &mut buffer);
 
                         let image_data = ImageData::new_with_u8_clamped_array_and_sh(
-                            Clamped(&array),
+                            Clamped(&buffer),
                             resource.width,
                             resource.height,
                         )
                         .unwrap();
+                        let x = transfer_to_host_2d.r.x as f64;
+                        let y = transfer_to_host_2d.r.y as f64;
                         self.canvas_ctx
-                            .put_image_data(&image_data, resource.x as f64, resource.y as f64)
+                            .put_image_data(&image_data, x as f64, y as f64)
                             .unwrap();
                     }
 

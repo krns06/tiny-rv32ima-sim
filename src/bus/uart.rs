@@ -7,9 +7,6 @@ use crate::{
     memory::Memory,
 };
 
-#[cfg(target_arch = "wasm32")]
-use crate::wasm::log;
-
 const IER_ERBFI: u8 = 1; // 受け取ったときの例外のIEのbit
 const IER_ETBEI: u8 = 0x2; // 出力したときの例外のIEのbit
 
