@@ -1,4 +1,4 @@
-use std::{error::Error, marker::PhantomData, sync::mpsc, thread};
+use std::{marker::PhantomData, sync::mpsc, thread};
 
 use crate::{
     bus::{
@@ -8,8 +8,6 @@ use crate::{
     cpu::Cpu,
     device::{DeviceManager, gpu::HostGpu, net::HostNet, shell::Shell},
 };
-
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 pub struct Simulator<T> {
     cpu: Cpu,

@@ -5,6 +5,7 @@ mod device;
 mod elf;
 mod memory;
 pub mod simulator;
+mod tlb;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AccessType {
