@@ -22,13 +22,13 @@ fn read_file(filename: &str, size: usize) -> Vec<u8> {
 fn main() {
     let mut simulator = Simulator::new().setup_native_devices();
 
-    let buf = read_file("firmware/fw_jump.bin", FW_SIZE);
+    let buf = read_file("statics/fw_jump.bin", FW_SIZE);
     simulator.load_flat(&buf, 0x80000000);
 
-    let buf = read_file("platform.dtb", DTB_SIZE);
+    let buf = read_file("statics/platform.dtb", DTB_SIZE);
     simulator.load_flat(&buf, 0x80100000);
 
-    let buf = read_file("Image5", KERNEL_SIZE);
+    let buf = read_file("statics/Image", KERNEL_SIZE);
     simulator.load_flat(&buf, 0x80400000);
 
     simulator.set_entry_point(0x80000000).run();

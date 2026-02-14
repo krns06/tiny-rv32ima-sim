@@ -561,6 +561,8 @@ dependencies = [
  "minifb",
  "nix 0.31.1",
  "termion",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

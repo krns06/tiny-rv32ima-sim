@@ -1,11 +1,16 @@
 mod bus;
-pub mod cpu;
+mod cpu;
 mod csr;
 mod device;
 mod elf;
+mod host_device;
 mod memory;
+mod native;
 pub mod simulator;
 mod tlb;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AccessType {

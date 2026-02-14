@@ -3,8 +3,17 @@ name = "tiny-rv32ima-sim"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+
+[target.'cfg(not(target_arch="wasm32"))'.dependencies]
 termion = "4.0.6"
 nix = {version = "0.31.1", features=["ioctl"]}
 minifb = "0.28"
+
+
+[target.'cfg(target_arch="wasm32")'.dependencies]
+web-sys = {version="0.3", features=['CanvasRenderingContext2d', 'ImageData', 'Document', 'Element', 'HtmlCanvasElement', 'Window', 'console']}
+wasm-bindgen = "0.2.108"
 

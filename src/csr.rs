@@ -51,6 +51,7 @@ const MENVCFGH_POS: u64 = 32;
 const MENVCFG_FIOM: u32 = 1;
 const MENVCFG_ADUE: u32 = 1 << 29;
 
+#[allow(unused)]
 const MCYCLE: u32 = 0xb00;
 const MINSTRET: u32 = 0xb02;
 const MINSTRETH: u32 = 0xb82;

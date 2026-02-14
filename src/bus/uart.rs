@@ -1,12 +1,14 @@
 use std::io::Write;
-use std::sync::mpsc::Receiver;
 
+use crate::device::DeviceMessage;
 use crate::{
     Result,
-    bus::{ExternalDevice, ExternalDeviceResponse},
+    bus::DeviceTrait,
+    device::{DeviceRecieverTrait, DeviceResponse},
     memory::Memory,
 };
 
+#[allow(unused)]
 const IER_ERBFI: u8 = 1; // 受け取ったときの例外のIEのbit
 const IER_ETBEI: u8 = 0x2; // 出力したときの例外のIEのbit
 
@@ -20,7 +22,10 @@ const LSR_TEMT: u8 = 1 << 6;
 const LSR_DR: u8 = 1;
 
 #[derive(Debug)]
-pub struct Uart {
+pub struct Uart<R>
+where
+    R: DeviceRecieverTrait,
+{
     lcr: u8,
     dlm: u8,
     dll: u8,
@@ -33,17 +38,13 @@ pub struct Uart {
     is_taken_interrupt: bool,
 
     input_buf: Vec<char>,
-    input_rx: Receiver<char>,
+
+    reciever: R,
 }
 
-impl ExternalDevice for Uart {
+impl<R: DeviceRecieverTrait> DeviceTrait for Uart<R> {
     #[inline]
-    fn read(
-        &mut self,
-        offset: u32,
-        size: u32,
-        _: &mut Memory,
-    ) -> Result<ExternalDeviceResponse<u32>> {
+    fn read(&mut self, offset: u32, size: u32, _: &mut Memory) -> Result<DeviceResponse<u32>> {
         if size != 1 {
             unimplemented!();
         }
@@ -96,7 +97,7 @@ impl ExternalDevice for Uart {
             _ => 0,
         } as u32;
 
-        Ok(ExternalDeviceResponse {
+        Ok(DeviceResponse {
             value,
             is_interrupting: self.is_interrupting,
         })
@@ -109,7 +110,7 @@ impl ExternalDevice for Uart {
         size: u32,
         value: u32,
         _: &mut Memory,
-    ) -> Result<ExternalDeviceResponse<()>> {
+    ) -> Result<DeviceResponse<()>> {
         if size != 1 {
             unimplemented!()
         }
@@ -125,8 +126,18 @@ impl ExternalDevice for Uart {
                 } else {
                     // THR
                     let c = value as u8;
-                    print!("{}", c as char);
-                    std::io::stdout().flush().unwrap();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        print!("{}", c as char);
+                        std::io::stdout().flush().unwrap();
+                    }
+
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        use crate::wasm::append_console;
+
+                        append_console(c);
+                    }
 
                     if self.ier & IER_ETBEI != 0 {
                         self.raise_interrupt(IIR_THRE);
@@ -158,7 +169,7 @@ impl ExternalDevice for Uart {
             _ => {}
         }
 
-        Ok(ExternalDeviceResponse {
+        Ok(DeviceResponse {
             value: (),
             is_interrupting: self.is_interrupting,
         })
@@ -174,9 +185,16 @@ impl ExternalDevice for Uart {
         self.is_taken_interrupt = true;
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn handle_incoming(&mut self, message: &DeviceMessage) {
+        if let DeviceMessage::Uart(c) = message {
+            self.input_buf.push(*c);
+        }
+    }
+
     #[inline]
     fn tick(&mut self, _: &mut Memory) -> bool {
-        if let Ok(c) = self.input_rx.try_recv() {
+        if let Ok(DeviceMessage::Uart(c)) = self.reciever.try_recv_from_host() {
             self.input_buf.push(c);
         }
 
@@ -195,8 +213,8 @@ impl ExternalDevice for Uart {
     }
 }
 
-impl Uart {
-    pub fn new(input_rx: Receiver<char>) -> Self {
+impl<R: DeviceRecieverTrait> Uart<R> {
+    pub fn new(reciever: R) -> Self {
         let input_buf = Vec::new();
 
         Uart {
@@ -210,7 +228,8 @@ impl Uart {
             is_interrupting: false,
             is_taken_interrupt: false,
             input_buf,
-            input_rx,
+
+            reciever,
         }
     }
 

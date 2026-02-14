@@ -8,6 +8,7 @@ const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 
 const PT_LOAD: Elf32Word = 1;
 
+#[allow(unused)]
 #[derive(Debug, Clone, Copy)]
 #[repr(packed)]
 pub struct Elf32Ehdr {
@@ -33,6 +34,7 @@ impl Elf32Ehdr {
     }
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone, Copy)]
 #[repr(packed)]
 pub struct Elf32Phdr {

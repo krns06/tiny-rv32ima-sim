@@ -1,7 +1,7 @@
 use std::mem::transmute;
 
 use crate::{
-    bus::{ExternalDeviceResponse, ExternalDeviceResult},
+    device::{DeviceResponse, DeviceResult},
     memory::Memory,
 };
 
@@ -108,7 +108,7 @@ impl VirtioMmio {
     }
 
     #[inline]
-    pub fn read(&mut self, offset: u32, size: u32) -> ExternalDeviceResult<u32> {
+    pub fn read(&mut self, offset: u32, size: u32) -> DeviceResult<u32> {
         if size != 4 {
             unimplemented!();
         }
@@ -133,14 +133,14 @@ impl VirtioMmio {
             _ => read_panic(offset),
         };
 
-        Ok(ExternalDeviceResponse {
+        Ok(DeviceResponse {
             value,
             is_interrupting: false,
         })
     }
 
     #[inline]
-    pub fn write(&mut self, offset: u32, size: u32, value: u32) -> ExternalDeviceResult<()> {
+    pub fn write(&mut self, offset: u32, size: u32, value: u32) -> DeviceResult<()> {
         if size != 4 {
             unimplemented!()
         }
@@ -207,7 +207,7 @@ impl VirtioMmio {
             _ => write_panic(offset, value),
         }
 
-        Ok(ExternalDeviceResponse {
+        Ok(DeviceResponse {
             value: (),
             is_interrupting: false,
         })
@@ -281,6 +281,7 @@ impl VirtQueueDesc {
         self.flags & 2 != 0
     }
 
+    #[allow(unused)]
     pub fn is_indirect(&self) -> bool {
         self.flags & 4 != 0
     }

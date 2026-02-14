@@ -1,45 +1,60 @@
-use std::{
-    error::Error,
-    sync::mpsc::{Receiver, Sender},
-};
+use std::fmt::Debug;
 
-use crate::device::gpu::GpuMessage;
+use crate::{IRQ, host_device::GpuMessage, memory::Memory};
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
+pub type DeviceResult<T> = crate::Result<DeviceResponse<T>>;
 
-pub mod gpu;
-pub mod net;
-pub mod shell;
-
-pub type UartGustReciever = Receiver<char>;
-pub type UartHostSender = Sender<char>;
-
-pub type NetGuestReceiver = Receiver<Vec<u8>>;
-pub type NetGuestSender = Sender<Vec<u8>>;
-
-pub type NetHostReceiver = Receiver<Vec<u8>>;
-pub type NetHostSender = Sender<Vec<u8>>;
-
-pub type GpuGuestSender = Sender<GpuMessage>;
-pub type GpuHostReciever = Receiver<GpuMessage>;
-
-pub trait HostDevice: Send {
-    fn run(self: Box<Self>);
+pub struct DeviceResponse<T> {
+    pub value: T,
+    pub is_interrupting: bool,
 }
 
-#[derive(Default)]
-pub struct DeviceManager {
-    devices: Vec<Box<dyn HostDevice>>,
+// 仮想デバイスとホストデバイスとの通信に使用する列挙体
+pub enum DeviceMessage {
+    Uart(char),
+    Net(Vec<u8>),
+    Gpu(GpuMessage),
+    None,
 }
 
-impl DeviceManager {
-    pub fn devices(self) -> Vec<Box<dyn HostDevice>> {
-        self.devices
-    }
+// 仮想デバイスからホストデバイスに対してのsenderに関してのトレイト
+pub trait DeviceSenderTrait: Default {
+    type E: Debug;
 
-    pub fn add_device(&mut self, device: Box<dyn HostDevice>) -> &mut Self {
-        self.devices.push(device);
+    fn send_to_host(&mut self, message: DeviceMessage) -> Result<(), Self::E>;
+}
 
-        self
+// 仮想デバイスがホストデバイスからのメッセージを受け取るためのトレイト
+pub trait DeviceRecieverTrait: Default {
+    type E: Debug;
+
+    fn try_recv_from_host(&self) -> Result<DeviceMessage, Self::E>;
+}
+
+// 仮想デバイスについてのトレイト
+pub trait DeviceTrait {
+    fn read(&mut self, offset: u32, size: u32, memory: &mut Memory) -> DeviceResult<u32>;
+    fn write(
+        &mut self,
+        offset: u32,
+        size: u32,
+        value: u32,
+        memory: &mut Memory,
+    ) -> DeviceResult<()>;
+
+    fn irq(&self) -> IRQ;
+
+    // 割り込みが起こったときのみ行う必要があるもののフラグの切り替えに使用する関数
+    fn take_interrupt(&mut self) {}
+
+    // イベントループからメッセージをデバイスに通知するときに使われる関数
+    // そのデバイス向けではない場合は受け取るべきではない。
+    #[cfg(target_arch = "wasm32")]
+    fn handle_incoming(&mut self, message: &DeviceMessage) {}
+
+    // tickごとに実行される関数
+    // 外部割り込みが有効な場合に実行される
+    fn tick(&mut self, _: &mut Memory) -> bool {
+        false
     }
 }

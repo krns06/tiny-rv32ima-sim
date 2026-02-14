@@ -55,10 +55,6 @@ impl Display for Registers {
 }
 
 impl Registers {
-    pub fn init(&mut self) {
-        *self = Self::default();
-    }
-
     #[inline]
     pub fn read(&self, reg: u32) -> u32 {
         let reg = reg as usize;
