@@ -1,27 +1,30 @@
 use std::marker::PhantomData;
 
-#[cfg(target_arch = "wasm32")]
-use web_sys::CanvasRenderingContext2d;
-
 use crate::{
     bus::{
-        Bus, Device, UART_BASE, UART_END, VIRTIO_GPU_BASE, VIRTIO_GPU_END, VIRTIO_NET_BASE,
+        Bus, BusDevice, UART_BASE, UART_END, VIRTIO_GPU_BASE, VIRTIO_GPU_END, VIRTIO_NET_BASE,
         VIRTIO_NET_END, uart::Uart, virtio_gpu::VirtioGpu, virtio_net::VirtioNet,
     },
     cpu::Cpu,
-    device::DeviceManager,
+    host_device::HostDeviceManager,
+    native::{NativeReciever, NativeSender},
 };
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::{sync::mpsc, thread};
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::device::{gpu::HostGpu, net::HostNet, shell::Shell};
+use crate::host_device::{gpu::HostGpu, net::HostNet, shell::Shell};
+
+#[cfg(target_arch = "wasm32")]
+use crate::{device::DeviceMessage, wasm::WasmGpuSender};
+#[cfg(target_arch = "wasm32")]
+use web_sys::CanvasRenderingContext2d;
 
 pub struct Simulator<T> {
     cpu: Cpu,
     bus: Bus,
-    device_manager: Option<DeviceManager>,
+    host_device_manager: Option<HostDeviceManager>,
     _marker: PhantomData<T>,
 }
 
@@ -47,7 +50,7 @@ impl Simulator<Initial> {
         Self {
             cpu: Cpu::default(),
             bus: Bus::default(),
-            device_manager: None,
+            host_device_manager: None,
             _marker: PhantomData,
         }
     }
@@ -57,15 +60,21 @@ impl Simulator<Initial> {
     pub fn setup_native_devices(mut self) -> Simulator<NativeSetup> {
         let (uart_tx, uart_rx) = mpsc::channel();
 
-        let uart = Device::new(Box::new(Uart::new(uart_rx)), UART_BASE..UART_END);
+        let uart = BusDevice::new(
+            Box::new(Uart::new(NativeReciever::new(uart_rx))),
+            UART_BASE..UART_END,
+        );
 
         let shell = Box::new(Shell::new(uart_tx));
 
         let (net_host_tx, net_guest_rx) = mpsc::channel();
         let (net_guest_tx, net_host_rx) = mpsc::channel();
 
-        let virtio_net = Device::new(
-            Box::new(VirtioNet::new(net_guest_rx, net_guest_tx)),
+        let virtio_net = BusDevice::new(
+            Box::new(VirtioNet::new(
+                NativeReciever::new(net_guest_rx),
+                NativeSender::new(net_guest_tx),
+            )),
             VIRTIO_NET_BASE..VIRTIO_NET_END,
         );
 
@@ -73,8 +82,8 @@ impl Simulator<Initial> {
 
         let (gpu_tx, gpu_rx) = mpsc::channel();
 
-        let virtio_gpu = Device::new(
-            Box::new(VirtioGpu::new(gpu_tx)),
+        let virtio_gpu = BusDevice::new(
+            Box::new(VirtioGpu::new(NativeSender::new(gpu_tx))),
             VIRTIO_GPU_BASE..VIRTIO_GPU_END,
         );
 
@@ -85,7 +94,7 @@ impl Simulator<Initial> {
             .add_device(virtio_net)
             .add_device(virtio_gpu);
 
-        let mut device_manager = DeviceManager::default();
+        let mut device_manager = HostDeviceManager::default();
 
         device_manager
             .add_device(shell)
@@ -95,7 +104,7 @@ impl Simulator<Initial> {
         Simulator {
             cpu: self.cpu,
             bus: self.bus,
-            device_manager: Some(device_manager),
+            host_device_manager: Some(device_manager),
             _marker: PhantomData,
         }
     }
@@ -106,10 +115,15 @@ impl Simulator<Initial> {
         mut self,
         canvas_ctx: CanvasRenderingContext2d,
     ) -> Simulator<WasmSetup> {
-        let uart = Device::new(Box::new(Uart::new()), UART_BASE..UART_END);
+        use crate::wasm::WasmUartReciever;
 
-        let virtio_gpu = Device::new(
-            Box::new(VirtioGpu::new(canvas_ctx)),
+        let uart_reciever = WasmUartReciever::default();
+        let uart = BusDevice::new(Box::new(Uart::new(uart_reciever)), UART_BASE..UART_END);
+
+        let virtio_sender = WasmGpuSender::new(canvas_ctx);
+
+        let virtio_gpu = BusDevice::new(
+            Box::new(VirtioGpu::new(virtio_sender)),
             VIRTIO_GPU_BASE..VIRTIO_GPU_END,
         );
 
@@ -118,7 +132,7 @@ impl Simulator<Initial> {
         Simulator {
             cpu: self.cpu,
             bus: self.bus,
-            device_manager: self.device_manager,
+            host_device_manager: self.host_device_manager,
             _marker: PhantomData,
         }
     }
@@ -132,7 +146,7 @@ impl Simulator<NativeSetup> {
         Simulator {
             cpu: self.cpu,
             bus: self.bus,
-            device_manager: self.device_manager,
+            host_device_manager: self.host_device_manager,
             _marker: PhantomData,
         }
     }
@@ -146,7 +160,7 @@ impl Simulator<WasmSetup> {
         Simulator {
             cpu: self.cpu,
             bus: self.bus,
-            device_manager: self.device_manager,
+            host_device_manager: self.host_device_manager,
             _marker: PhantomData,
         }
     }
@@ -155,7 +169,7 @@ impl Simulator<WasmSetup> {
 #[cfg(not(target_arch = "wasm32"))]
 impl Simulator<NativeLoaded> {
     pub fn run(mut self) {
-        let device_manager = self.device_manager.take().unwrap();
+        let device_manager = self.host_device_manager.take().unwrap();
 
         for device in device_manager.devices() {
             thread::spawn(move || device.run());
@@ -211,5 +225,9 @@ impl Simulator<WasmLoaded> {
 
         self.cpu.mut_csr().progress_cycle();
         self.cpu.mut_csr().progress_time();
+    }
+
+    pub fn send_key(&mut self, key: char) {
+        self.bus.push_messaeg(DeviceMessage::Uart(key));
     }
 }

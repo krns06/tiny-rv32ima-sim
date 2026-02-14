@@ -4,16 +4,16 @@
   #address-cells = <1>;
   #size-cells = <1>;
 
-    //aliases {
-    //  serial0 = "/soc/serial@10000000";
-    //};
+    aliases {
+      serial0 = "/soc/serial@10000000";
+    };
 
     chosen {
-      bootargs = "earlycon=uart8250,mmio,0x10000000 console=tty0 rw init=/init mem=64M";
+      bootargs = "earlycon=uart8250,mmio,0x10000000 console=tty0 console=ttyS0 rw init=/init mem=64M";
       // bootargs = "earlycon=framebuffer0 console=tty0 rw init=/init mem=64m";
       // bootargs = "earlycon=sbi";
-     // stdout-path = "/soc/serial@10000000";
-		  stdout-path = "framebuffer0";
+      stdout-path = "/soc/serial@10000000";
+		  // stdout-path = "framebuffer0";
       opensbi-config {
         compatible = "opensbi,config";
         stdout-path = "/soc/serial@10000000";

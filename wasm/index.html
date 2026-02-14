@@ -7,7 +7,7 @@
   <body>
     <div style="display: flex;">
       <canvas id="canvas" width="800" height="600"></canvas>
-      
+
       <div id="serial-console" style="
         width: 960px;
         height: 600px;
@@ -29,7 +29,6 @@
 
       const consoleElem = document.getElementById("serial-console");
 
-
       window.append_console = function(char) {
             if (consoleElem) {
                 consoleElem.textContent += String.fromCharCode(char);
@@ -39,8 +38,30 @@
 
     async function run() {
       await init();
-
       const sim = new WasmSimulator("canvas");
+
+      window.addEventListener('keydown', (event) => {
+        if (event.ctrlKey || event.metaKey) {
+          if (['w', 'n', 't', 'p', 'f'].includes(event.key.toLowerCase())) {
+              event.preventDefault();
+          }
+        }
+
+        if (event.key === '/') {
+          event.preventDefault();
+        }
+
+        if (event.key.length === 1) {
+           const c = event.key.charCodeAt(0);
+           console.log(c);
+            sim.send_key(c);
+        } else if (event.key == "Backspace")  {
+          event.preventDefault();
+          sim.send_key(8);
+        } else if (event.key === "Enter") {
+            sim.send_key(13);
+        }
+     });
 
       function loop() {
         sim.step();
@@ -55,3 +76,4 @@
 </script>
   </body>
 </html>
+

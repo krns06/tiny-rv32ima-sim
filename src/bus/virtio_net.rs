@@ -2,19 +2,20 @@ use std::mem::transmute;
 
 use crate::{
     bus::{
-        ExternalDevice, ExternalDeviceResponse, ExternalDeviceResult,
+        DeviceTrait,
         virtio_mmio::{
             VIRTIO_REG_CONFIG, VIRTIO_REG_NOTIFY, VIRTIO_REG_STATUS, VirtioMmio, VirtioType,
             read_panic,
         },
     },
-    device::{NetGuestReceiver, NetGuestSender},
+    device::{DeviceMessage, DeviceRecieverTrait, DeviceResponse, DeviceResult, DeviceSenderTrait},
     memory::Memory,
 };
 
 const VIRTIO_NET_HEADER_SIZE: usize = size_of::<VirtioNetHeader>();
 
 const VIRTIO_NET_RECV_IDX: u32 = 0;
+#[allow(unused)]
 const VIRTIO_NET_TRANS_IDX: u32 = 1;
 
 const FEATURES: [u32; 4] = [1 << 5, 1, 0, 0];
@@ -22,13 +23,17 @@ const MAC_ADDRESS: [u8; 6] = [2, 0, 0, 1, 2, 3];
 const MAX_QUEUE_SIZE: usize = 256;
 
 #[derive(Debug)]
-pub struct VirtioNet {
+pub struct VirtioNet<S, R>
+where
+    S: DeviceSenderTrait,
+    R: DeviceRecieverTrait,
+{
     virtio: VirtioMmio,
 
     last_idxes: [u16; 2],
 
-    input_rx: Option<NetGuestReceiver>, //[todo] 将来的にはここは変更しないといけない
-    output_tx: NetGuestSender,
+    sender: S,
+    reciever: R,
 }
 
 #[derive(Debug, Default)]
@@ -43,9 +48,13 @@ pub struct VirtioNetHeader {
     num_buffers: u16,
 }
 
-impl ExternalDevice for VirtioNet {
+impl<S, R> DeviceTrait for VirtioNet<S, R>
+where
+    S: DeviceSenderTrait,
+    R: DeviceRecieverTrait,
+{
     #[inline]
-    fn read(&mut self, offset: u32, size: u32, _: &mut Memory) -> ExternalDeviceResult<u32> {
+    fn read(&mut self, offset: u32, size: u32, _: &mut Memory) -> DeviceResult<u32> {
         match offset {
             0..VIRTIO_REG_CONFIG => self.virtio.read(offset, size),
             _ => {
@@ -60,7 +69,7 @@ impl ExternalDevice for VirtioNet {
                     _ => read_panic(offset as u32 + 0x100),
                 };
 
-                Ok(ExternalDeviceResponse {
+                Ok(DeviceResponse {
                     value,
                     is_interrupting: false,
                 })
@@ -75,12 +84,12 @@ impl ExternalDevice for VirtioNet {
         size: u32,
         value: u32,
         memory: &mut Memory,
-    ) -> ExternalDeviceResult<()> {
+    ) -> DeviceResult<()> {
         match offset {
             VIRTIO_REG_NOTIFY => {
                 let is_interrupting = self.handle_notify(value, memory);
 
-                return Ok(ExternalDeviceResponse {
+                return Ok(DeviceResponse {
                     value: (),
                     is_interrupting,
                 });
@@ -97,7 +106,7 @@ impl ExternalDevice for VirtioNet {
             }
         };
 
-        Ok(ExternalDeviceResponse {
+        Ok(DeviceResponse {
             value: (),
             is_interrupting: false,
         })
@@ -112,9 +121,7 @@ impl ExternalDevice for VirtioNet {
             return false;
         }
 
-        let rx = self.input_rx.take().unwrap();
-
-        if let Ok(v) = rx.try_recv() {
+        if let Ok(DeviceMessage::Net(v)) = self.reciever.try_recv_from_host() {
             let mut header = VirtioNetHeader::default();
             header.num_buffers = 1;
 
@@ -130,7 +137,6 @@ impl ExternalDevice for VirtioNet {
 
             if driver.idx == last_idx {
                 // キューが足りない場合
-                self.input_rx = Some(rx);
                 return false;
             }
 
@@ -157,18 +163,19 @@ impl ExternalDevice for VirtioNet {
             device.idx = device.idx.wrapping_add(1);
             self.last_idxes[VIRTIO_NET_RECV_IDX as usize] = last_idx.wrapping_add(1);
 
-            self.input_rx = Some(rx);
             return true;
         }
-
-        self.input_rx = Some(rx);
 
         false
     }
 }
 
-impl VirtioNet {
-    pub fn new(input_rx: NetGuestReceiver, output_tx: NetGuestSender) -> Self {
+impl<S, R> VirtioNet<S, R>
+where
+    S: DeviceSenderTrait,
+    R: DeviceRecieverTrait,
+{
+    pub fn new(reciever: R, sender: S) -> Self {
         // MACとVIRTIO_F_VERSION_1
         // キューは送信用と受信用
         let virtio = VirtioMmio::new(VirtioType::Network, FEATURES, 2, MAX_QUEUE_SIZE as u32);
@@ -176,16 +183,16 @@ impl VirtioNet {
         Self {
             virtio,
             last_idxes: [0; 2],
-            input_rx: Some(input_rx),
-            output_tx,
+            sender,
+            reciever,
         }
     }
 
     fn reset(&mut self) {
-        let input_rx = self.input_rx.take();
-        let output_tx = self.output_tx.clone();
+        let sender = std::mem::take(&mut self.sender);
+        let reciever = std::mem::take(&mut self.reciever);
 
-        *self = Self::new(input_rx.unwrap(), output_tx);
+        *self = Self::new(reciever, sender);
     }
 
     // notifyを処理する関数
@@ -235,7 +242,9 @@ impl VirtioNet {
                     }
 
                     let data = &data_ptr[VIRTIO_NET_HEADER_SIZE..];
-                    self.output_tx.send(data.to_vec()).unwrap();
+                    self.sender
+                        .send_to_host(DeviceMessage::Net(data.to_vec()))
+                        .unwrap();
 
                     device.elems[ring_idx].len = 0;
                     device.elems[ring_idx].id = desc_idx as u32;

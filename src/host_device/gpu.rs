@@ -2,7 +2,11 @@ use std::error::Error;
 
 use minifb::{Key, Window, WindowOptions};
 
-use crate::device::{GpuHostReciever, GpuOperation, HostDevice};
+use crate::{
+    device::DeviceMessage,
+    host_device::{GpuOperation, HostDevice},
+    native::NativeHostReciever,
+};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -15,7 +19,7 @@ const BUFFER_SIZE: usize = WIDTH * HEIHGT;
 pub struct HostGpu {
     buffer: Box<[u32; BUFFER_SIZE]>,
     resource_id: u32,
-    gpu_rx: GpuHostReciever,
+    gpu_rx: NativeHostReciever,
 }
 
 impl HostDevice for HostGpu {
@@ -26,7 +30,7 @@ impl HostDevice for HostGpu {
 }
 
 impl HostGpu {
-    pub fn new(gpu_rx: GpuHostReciever) -> Self {
+    pub fn new(gpu_rx: NativeHostReciever) -> Self {
         HostGpu {
             buffer: Box::new([0; BUFFER_SIZE]),
             resource_id: 0,
@@ -40,7 +44,7 @@ impl HostGpu {
         window.set_target_fps(60);
 
         while window.is_open() && !window.is_key_down(Key::Escape) {
-            if let Ok(message) = self.gpu_rx.try_recv() {
+            if let Ok(DeviceMessage::Gpu(message)) = self.gpu_rx.try_recv() {
                 match message.operation {
                     GpuOperation::Copy => {
                         let start = message.rect.start();

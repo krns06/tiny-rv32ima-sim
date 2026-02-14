@@ -1,9 +1,12 @@
 use std::{collections::VecDeque, ops::Range};
 
+#[cfg(target_arch = "wasm32")]
+use crate::device::DeviceMessage;
 use crate::{
     AccessType, IRQ, Priv, Result, Trap,
     bus::{clint::Clint, plic::Plic},
     csr::Csr,
+    device::DeviceTrait,
     memory::Memory,
 };
 
@@ -40,39 +43,8 @@ pub struct CpuContext<'a> {
     pub access_type: AccessType,
 }
 
-pub struct ExternalDeviceResponse<T> {
-    pub value: T,
-    pub is_interrupting: bool,
-}
-
-pub type ExternalDeviceResult<T> = Result<ExternalDeviceResponse<T>>;
-
-// 外部割り込みを起こす可能性があるデバイス
-pub trait ExternalDevice: std::fmt::Debug {
-    fn read(&mut self, offset: u32, size: u32, memory: &mut Memory) -> ExternalDeviceResult<u32>;
-    fn write(
-        &mut self,
-        offset: u32,
-        size: u32,
-        value: u32,
-        memory: &mut Memory,
-    ) -> ExternalDeviceResult<()>;
-
-    fn irq(&self) -> IRQ;
-
-    // 割り込みが起こったときのみ行う必要があるもののフラグの切り替えに使用する関数
-    fn take_interrupt(&mut self) {}
-
-    // tickごとに実行される関数
-    // 外部割り込みが有効な場合に実行される
-    fn tick(&mut self, _: &mut Memory) -> bool {
-        false
-    }
-}
-
-#[derive(Debug)]
-pub struct Device {
-    device: Box<dyn ExternalDevice>,
+pub struct BusDevice {
+    device: Box<dyn DeviceTrait>,
     range: Range<u32>,
 }
 
@@ -82,13 +54,16 @@ pub struct Bus {
     clint: Clint,
     plic: Plic,
 
-    devices: Vec<Device>,
+    devices: Vec<BusDevice>,
 
     irqs_to_raise: VecDeque<IRQ>,
+
+    #[cfg(target_arch = "wasm32")]
+    incoming_messages: VecDeque<DeviceMessage>,
 }
 
-impl Device {
-    pub fn new(device: Box<dyn ExternalDevice>, range: Range<u32>) -> Self {
+impl BusDevice {
+    pub fn new(device: Box<dyn DeviceTrait>, range: Range<u32>) -> Self {
         Self { device, range }
     }
 }
@@ -112,6 +87,8 @@ impl Default for Bus {
             plic,
             devices: Vec::new(),
             irqs_to_raise: VecDeque::new(),
+            #[cfg(target_arch = "wasm32")]
+            incoming_messages: VecDeque::new(),
         }
     }
 }
@@ -182,7 +159,7 @@ impl Bus {
         }
     }
 
-    pub fn add_device(&mut self, device: Device) -> &mut Self {
+    pub fn add_device(&mut self, device: BusDevice) -> &mut Self {
         self.devices.push(device);
 
         self
@@ -194,7 +171,16 @@ impl Bus {
             return;
         }
 
+        #[cfg(target_arch = "wasm32")]
+        let message = self
+            .incoming_messages
+            .pop_front()
+            .unwrap_or(DeviceMessage::None);
+
         for device in &mut self.devices {
+            #[cfg(target_arch = "wasm32")]
+            device.device.handle_incoming(&message);
+
             let is_interrupting = device.device.tick(&mut self.memory);
 
             if is_interrupting {
@@ -244,5 +230,10 @@ impl Bus {
 
     pub fn memory(&mut self) -> &mut Memory {
         &mut self.memory
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn push_messaeg(&mut self, message: DeviceMessage) {
+        self.incoming_messages.push_back(message);
     }
 }

@@ -5,6 +5,7 @@ use crate::{
     bus::{Bus, CpuContext},
     csr::Csr,
     illegal,
+    tlb::{Tlb, TlbEntry},
 };
 
 const PTE_V: u32 = 1;
@@ -54,10 +55,6 @@ impl Display for Registers {
 }
 
 impl Registers {
-    pub fn init(&mut self) {
-        *self = Self::default();
-    }
-
     #[inline]
     pub fn read(&self, reg: u32) -> u32 {
         let reg = reg as usize;
@@ -86,6 +83,7 @@ pub struct Cpu {
     inst: u32,
 
     csr: Csr,
+    tlb: Tlb,
 
     reserved_addr: Option<u32>, // For LR.W or SC.W
     fault_addr: Option<u32>,
@@ -126,6 +124,7 @@ impl Default for Cpu {
         let prv = Priv::Machine;
         let regs = Registers::default();
         let csr = Csr::default();
+        let tlb = Tlb::default();
 
         Self {
             prv,
@@ -133,6 +132,7 @@ impl Default for Cpu {
             pc: 0,
             inst: 0,
             csr,
+            tlb,
             reserved_addr: None,
             fault_addr: None,
         }
@@ -170,6 +170,12 @@ impl Cpu {
             return Ok(va);
         }
 
+        let vpn = va >> 12;
+
+        if let Some(entry) = self.tlb.lookup_ppn(va, local_prv) {
+            return Ok(entry.ppn() | (va & 0xfff));
+        }
+
         macro_rules! fault {
             ($e:expr) => {{
                 self.fault_addr = Some(va);
@@ -181,14 +187,13 @@ impl Cpu {
             };
         }
 
-        let vpns = va >> 12;
         let mut addr = self.csr.get_satp_ppn() * PAGESIZE;
         let mut pte = 0;
 
         let mut last = None;
 
         for i in (0..2).rev() {
-            let vpn = (vpns >> (10 * i)) & 0x3ff;
+            let vpn = (vpn >> (10 * i)) & 0x3ff;
             let pte_addr = addr + vpn * PTESIZE;
 
             pte = bus.read(
@@ -262,11 +267,17 @@ impl Cpu {
 
         if let Some(i) = last {
             // 34bitのはずだけど2bitは無視できるっぽい
-            let pa = if i == 1 {
-                ((pte << 2) & 0xffc00000) | (va & 0x3fffff)
+            let ppn = if i == 1 {
+                ((pte << 2) & 0xffc00000) | (va & 0x3ff000)
             } else {
-                ((pte << 2) & 0xfffff000) | (va & 0xfff)
+                (pte << 2) & 0xfffff000
             };
+
+            let pa = ppn | (va & 0xfff);
+
+            let entry = TlbEntry::new(va, ppn, local_prv);
+
+            self.tlb.register_entry(entry);
 
             Ok(pa)
         } else {
@@ -802,6 +813,8 @@ impl Cpu {
                                 {
                                     illegal!()
                                 }
+
+                                self.tlb.clear();
                             }
                             _ => match self.inst {
                                 0x00000073 => {

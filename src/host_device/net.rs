@@ -9,14 +9,18 @@ use std::{
 
 use nix::libc::{self, TUNSETIFF, ioctl};
 
-use crate::device::{HostDevice, NetHostReceiver, NetHostSender};
+use crate::{
+    device::DeviceMessage,
+    host_device::HostDevice,
+    native::{NativeHostReciever, NativeHostSender},
+};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 #[derive(Debug)]
 pub struct HostNet {
-    net_rx: NetHostReceiver,
-    net_tx: NetHostSender,
+    net_rx: NativeHostReciever,
+    net_tx: NativeHostSender,
 }
 
 #[derive(Default)]
@@ -32,7 +36,7 @@ impl HostDevice for HostNet {
 }
 
 impl HostNet {
-    pub fn new(net_rx: NetHostReceiver, net_tx: NetHostSender) -> Self {
+    pub fn new(net_rx: NativeHostReciever, net_tx: NativeHostSender) -> Self {
         Self { net_rx, net_tx }
     }
 
@@ -63,7 +67,7 @@ impl HostNet {
 
         thread::spawn(move || {
             loop {
-                if let Ok(v) = net_rx.try_recv() {
+                if let Ok(DeviceMessage::Net(v)) = net_rx.try_recv() {
                     if let Err(e) = fd_for_write.write(&v) {
                         eprintln!("[WARNING]: {} from run_shell.", e);
                     }
@@ -76,7 +80,7 @@ impl HostNet {
 
             loop {
                 if let Ok(n) = fd_for_read.read(&mut buf) {
-                    net_tx.send(buf[..n].to_vec()).unwrap();
+                    net_tx.send(DeviceMessage::Net(buf[..n].to_vec())).unwrap();
                 }
             }
         });

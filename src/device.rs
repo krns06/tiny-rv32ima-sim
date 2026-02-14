@@ -1,95 +1,60 @@
-use std::{
-    error::Error,
-    fmt::Debug,
-    sync::mpsc::{Receiver, Sender},
-};
+use std::fmt::Debug;
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
+use crate::{IRQ, host_device::GpuMessage, memory::Memory};
 
-#[cfg(not(target_arch = "wasm32"))]
-pub mod gpu;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod net;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod shell;
+pub type DeviceResult<T> = crate::Result<DeviceResponse<T>>;
 
-pub type UartGustReciever = Receiver<char>;
-pub type UartHostSender = Sender<char>;
-
-pub type NetGuestReceiver = Receiver<Vec<u8>>;
-pub type NetGuestSender = Sender<Vec<u8>>;
-
-pub type NetHostReceiver = Receiver<Vec<u8>>;
-pub type NetHostSender = Sender<Vec<u8>>;
-
-pub type GpuGuestSender = Sender<GpuMessage>;
-pub type GpuHostReciever = Receiver<GpuMessage>;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub trait HostDevice: Send + Debug {
-    fn run(self: Box<Self>);
+pub struct DeviceResponse<T> {
+    pub value: T,
+    pub is_interrupting: bool,
 }
 
-#[cfg(target_arch = "wasm32")]
-pub trait HostDevice: Debug {}
-
-#[derive(Default, Debug)]
-pub struct DeviceManager {
-    devices: Vec<Box<dyn HostDevice>>,
+// 仮想デバイスとホストデバイスとの通信に使用する列挙体
+pub enum DeviceMessage {
+    Uart(char),
+    Net(Vec<u8>),
+    Gpu(GpuMessage),
+    None,
 }
 
-impl DeviceManager {
-    pub fn devices(self) -> Vec<Box<dyn HostDevice>> {
-        self.devices
-    }
+// 仮想デバイスからホストデバイスに対してのsenderに関してのトレイト
+pub trait DeviceSenderTrait: Default {
+    type E: Debug;
 
-    pub fn add_device(&mut self, device: Box<dyn HostDevice>) -> &mut Self {
-        self.devices.push(device);
-
-        self
-    }
+    fn send_to_host(&mut self, message: DeviceMessage) -> Result<(), Self::E>;
 }
 
-#[derive(Debug)]
-pub enum GpuOperation {
-    Copy,
-    Disable,
-    Flush,
+// 仮想デバイスがホストデバイスからのメッセージを受け取るためのトレイト
+pub trait DeviceRecieverTrait: Default {
+    type E: Debug;
+
+    fn try_recv_from_host(&self) -> Result<DeviceMessage, Self::E>;
 }
 
-#[derive(Debug, Default)]
-pub struct GpuRect {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
-}
+// 仮想デバイスについてのトレイト
+pub trait DeviceTrait {
+    fn read(&mut self, offset: u32, size: u32, memory: &mut Memory) -> DeviceResult<u32>;
+    fn write(
+        &mut self,
+        offset: u32,
+        size: u32,
+        value: u32,
+        memory: &mut Memory,
+    ) -> DeviceResult<()>;
 
-impl GpuRect {
-    fn start(&self) -> usize {
-        (self.x + self.y * self.width) as usize
-    }
+    fn irq(&self) -> IRQ;
 
-    fn end(&self) -> usize {
-        self.start() + (self.width * self.height) as usize
-    }
-}
+    // 割り込みが起こったときのみ行う必要があるもののフラグの切り替えに使用する関数
+    fn take_interrupt(&mut self) {}
 
-#[derive(Debug)]
-pub struct GpuMessage {
-    pub operation: GpuOperation,
-    pub resource_id: u32,
-    pub rect: GpuRect,
-    pub buffer: Vec<u32>,
-}
+    // イベントループからメッセージをデバイスに通知するときに使われる関数
+    // そのデバイス向けではない場合は受け取るべきではない。
+    #[cfg(target_arch = "wasm32")]
+    fn handle_incoming(&mut self, message: &DeviceMessage) {}
 
-impl GpuMessage {
-    pub fn new(operation: GpuOperation, resource_id: u32) -> Self {
-        Self {
-            operation,
-            resource_id,
-            rect: GpuRect::default(),
-            buffer: Vec::new(),
-        }
+    // tickごとに実行される関数
+    // 外部割り込みが有効な場合に実行される
+    fn tick(&mut self, _: &mut Memory) -> bool {
+        false
     }
 }
