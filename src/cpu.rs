@@ -172,7 +172,10 @@ impl Cpu {
 
         let vpn = va >> 12;
 
-        if let Some(entry) = self.tlb.lookup_ppn(va, local_prv) {
+        if let Some(entry) = self
+            .tlb
+            .lookup_ppn(va, local_prv, self.csr.satp, access_type)
+        {
             return Ok(entry.ppn() | (va & 0xfff));
         }
 
@@ -251,9 +254,9 @@ impl Cpu {
                         //自動更新の方ではテストが通らなさそう。
 
                         if self.csr.is_svadu_enabled() {
-                            fault!();
-                        } else {
                             todo!();
+                        } else {
+                            fault!();
                         }
                     }
 
@@ -275,7 +278,7 @@ impl Cpu {
 
             let pa = ppn | (va & 0xfff);
 
-            let entry = TlbEntry::new(va, ppn, local_prv);
+            let entry = TlbEntry::new(va, ppn, local_prv, self.csr.satp, access_type);
 
             self.tlb.register_entry(entry);
 

@@ -309,7 +309,9 @@ impl Csr {
             MEDELEG => self.medeleg = value & MEDELEG_SUPPORTED,
             MIDELEG => self.mideleg = value & MIDELEG_SUPPORTED,
             MENVCFG => self.menvcfg = (self.menvcfg & 0xffff0000) | (value & MENVCFG_FIOM) as u64,
-            MENVCFGH => self.menvcfg = self.menvcfg | ((value & MENVCFG_ADUE) << 31) as u64,
+            // MENVCFGH => self.menvcfg = self.menvcfg | ((value & MENVCFG_ADUE) << 31) as u64,
+            // [todo]: svaduのサポート
+            MENVCFGH => {}
             MINSTRET => {
                 self.instret = (self.instret & !MINSTRET_MASK) | (value as u64);
 
@@ -613,7 +615,7 @@ impl Csr {
 
     #[inline]
     pub fn is_svadu_enabled(&self) -> bool {
-        (self.menvcfg >> MENVCFGH_POS) & MENVCFG_ADUE as u64 == 0
+        (self.menvcfg >> MENVCFGH_POS) & MENVCFG_ADUE as u64 != 0
     }
 
     // トラップを処理する関数
