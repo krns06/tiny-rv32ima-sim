@@ -62,11 +62,11 @@ where
                     unimplemented!();
                 }
 
-                let offset = (offset - 0x100) as usize;
+                let offset = offset - VIRTIO_REG_CONFIG;
 
                 let value = match offset {
-                    0..6 => MAC_ADDRESS[offset] as u32,
-                    _ => read_panic(offset as u32 + 0x100),
+                    0..6 => MAC_ADDRESS[offset as usize] as u32,
+                    _ => read_panic(offset + VIRTIO_REG_CONFIG),
                 };
 
                 Ok(DeviceResponse {

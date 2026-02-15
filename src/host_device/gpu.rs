@@ -44,7 +44,7 @@ impl HostGpu {
         window.set_target_fps(60);
 
         while window.is_open() && !window.is_key_down(Key::Escape) {
-            if let Ok(DeviceMessage::Gpu(message)) = self.gpu_rx.try_recv() {
+            if let Ok(DeviceMessage::Gpu(message)) = self.gpu_rx.recv() {
                 match message.operation {
                     GpuOperation::Copy => {
                         let start = message.rect.start();

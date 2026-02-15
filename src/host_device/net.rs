@@ -67,7 +67,7 @@ impl HostNet {
 
         thread::spawn(move || {
             loop {
-                if let Ok(DeviceMessage::Net(v)) = net_rx.try_recv() {
+                if let Ok(DeviceMessage::Net(v)) = net_rx.recv() {
                     if let Err(e) = fd_for_write.write(&v) {
                         eprintln!("[WARNING]: {} from run_shell.", e);
                     }
@@ -85,8 +85,6 @@ impl HostNet {
             }
         });
 
-        loop {
-            thread::sleep(Duration::from_micros(10));
-        }
+        Ok(())
     }
 }
