@@ -25,6 +25,9 @@ pub struct WasmGpuSender {
 #[derive(Default)]
 pub struct WasmUartReciever {}
 
+#[derive(Default)]
+pub struct WasmBlkSender {}
+
 impl Default for WasmGpuSender {
     fn default() -> Self {
         Self { canvas_ctx: None }
@@ -75,6 +78,14 @@ impl DeviceRecieverTrait for WasmUartReciever {
     type E = ();
 
     fn try_recv_from_host(&self) -> Result<DeviceMessage, Self::E> {
+        Err(())
+    }
+}
+
+impl DeviceSenderTrait for WasmBlkSender {
+    type E = ();
+
+    fn send_to_host(&mut self, message: DeviceMessage) -> Result<(), Self::E> {
         Err(())
     }
 }

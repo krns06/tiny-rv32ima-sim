@@ -120,6 +120,7 @@ pub enum IRQ {
     None = 0,
     VirtioNet = 1,
     VirtioGpu = 2,
+    VirtioBlk = 3,
     Uart = 0xa,
 }
 
@@ -129,6 +130,7 @@ impl From<usize> for IRQ {
             0 => Self::None,
             1 => Self::VirtioNet,
             2 => Self::VirtioGpu,
+            3 => Self::VirtioBlk,
             0xa => Self::Uart,
             _ => unreachable!(),
         }

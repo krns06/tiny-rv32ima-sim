@@ -193,7 +193,7 @@ impl<S: DeviceSenderTrait> DeviceTrait for VirtioGpu<S> {
                     match offset {
                         8 => MAX_SCANOUTS,
                         0xc => MAX_CAPSETS,
-                        _ => read_panic(offset),
+                        _ => read_panic(offset + VIRTIO_REG_CONFIG),
                     }
                 }
             }
@@ -351,7 +351,7 @@ impl<S: DeviceSenderTrait> VirtioGpu<S> {
 
             let command_desc = self.virtio.desc(command_idx, desc_base, memory);
 
-            if !command_desc.is_next() {
+            if !command_desc.is_next() || VIRTIO_GPU_HEADER_SIZE > command_desc.len as usize {
                 unimplemented!();
             }
 

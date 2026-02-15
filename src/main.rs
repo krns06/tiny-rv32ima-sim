@@ -5,6 +5,7 @@ use std::{
 
 use tiny_rv32ima_sim::simulator::Simulator;
 
+const BLOCK_SIZE: usize = 32 * 1024 * 1024;
 const FW_SIZE: usize = 1024 * 1024;
 const DTB_SIZE: usize = 64 * 1024;
 const KERNEL_SIZE: usize = 36 * 1024 * 1024;
@@ -20,7 +21,7 @@ fn read_file(filename: &str, size: usize) -> Vec<u8> {
 }
 
 fn main() {
-    let mut simulator = Simulator::new().setup_native_devices();
+    let mut simulator = Simulator::new().setup_native_devices("statics/fs");
 
     let buf = read_file("statics/fw_jump.bin", FW_SIZE);
     simulator.load_flat(&buf, 0x80000000);

@@ -11,7 +11,6 @@
     chosen {
       bootargs = "earlycon=uart8250,mmio,0x10000000 console=tty0 console=ttyS0 rw init=/init mem=64M";
       // bootargs = "earlycon=framebuffer0 console=tty0 rw init=/init mem=64m";
-      // bootargs = "earlycon=sbi";
       stdout-path = "/soc/serial@10000000";
 		  // stdout-path = "framebuffer0";
       opensbi-config {
@@ -44,8 +43,8 @@
           device_type = "cpu";
           status = "okay";
           riscv,isa-base = "rv32i";
-          riscv,isa = "rv32ima_zicsr_zifencei_zicntr_zmmul_zaamo_zalrsc_svadu";
-          riscv,isa-extensions = "i", "m", "a", "svadu", "zicsr", "zifencei", "zicntr", "zmmul", "zaamo", "zalrsc";
+          riscv,isa = "rv32ima_zicsr_zifencei_zicntr_zmmul_zaamo_zalrsc";
+          riscv,isa-extensions = "i", "m", "a", "zicsr", "zifencei", "zicntr", "zmmul", "zaamo", "zalrsc";
           mmu-type = "riscv,sv32";
           reg = <0>;
           compatible = "riscv";
@@ -84,6 +83,13 @@
         interrupts = <2>;
 			  interrupt-parent = <0x03>;
       };
+
+      //virtio_blk@10900000 {
+      //  compatible = "virtio,mmio";
+      //  reg = <0x10900000 0x1000>;
+      //  interrupts = <3>;
+			//  interrupt-parent = <0x03>;
+      //};
       
       uart0: serial@10000000 {
         compatible = "ns16550a";

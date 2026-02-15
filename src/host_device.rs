@@ -1,6 +1,8 @@
 use std::fmt::Debug;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod blk;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod gpu;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod net;

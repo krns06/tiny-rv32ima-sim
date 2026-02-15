@@ -19,6 +19,7 @@ pub const VIRTIO_QUEUE_DEVICE_ELEM_SIZE: usize = size_of::<VirtQueueDeviceElem>(
 #[derive(Debug, Clone, Copy)]
 pub enum VirtioType {
     Network = 1,
+    Block = 2,
     Gpu = 16,
 }
 

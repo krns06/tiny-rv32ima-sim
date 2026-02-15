@@ -2,8 +2,9 @@ use std::marker::PhantomData;
 
 use crate::{
     bus::{
-        Bus, BusDevice, UART_BASE, UART_END, VIRTIO_GPU_BASE, VIRTIO_GPU_END, VIRTIO_NET_BASE,
-        VIRTIO_NET_END, uart::Uart, virtio_gpu::VirtioGpu, virtio_net::VirtioNet,
+        Bus, BusDevice, UART_BASE, UART_END, VIRTIO_BLK_BASE, VIRTIO_BLK_END, VIRTIO_GPU_BASE,
+        VIRTIO_GPU_END, VIRTIO_NET_BASE, VIRTIO_NET_END, uart::Uart, virtio_blk::VirtioBlk,
+        virtio_gpu::VirtioGpu, virtio_net::VirtioNet,
     },
     cpu::Cpu,
     host_device::HostDeviceManager,
@@ -17,7 +18,10 @@ use std::{sync::mpsc, thread};
 use crate::host_device::{gpu::HostGpu, net::HostNet, shell::Shell};
 
 #[cfg(target_arch = "wasm32")]
-use crate::{device::DeviceMessage, wasm::WasmGpuSender};
+use crate::{
+    device::DeviceMessage,
+    wasm::{WasmGpuSender, WasmUartReciever},
+};
 #[cfg(target_arch = "wasm32")]
 use web_sys::CanvasRenderingContext2d;
 
@@ -56,8 +60,11 @@ impl Simulator<Initial> {
     }
 
     // native
+    // ブロックデバイス用にファイルの中身を持つVecを引数に取る。
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn setup_native_devices(mut self) -> Simulator<NativeSetup> {
+    pub fn setup_native_devices(mut self, filepath: &str) -> Simulator<NativeSetup> {
+        use crate::host_device::blk::HostBlk;
+
         let (uart_tx, uart_rx) = mpsc::channel();
 
         let uart = BusDevice::new(
@@ -89,17 +96,31 @@ impl Simulator<Initial> {
 
         let host_gpu = Box::new(HostGpu::new(gpu_rx));
 
+        let (blk_tx, blk_rx) = mpsc::channel();
+
+        let mut host_blk = HostBlk::new(filepath, blk_rx).unwrap();
+        let block_bytes = host_blk.read_bytes().unwrap();
+
+        let virtio_blk = BusDevice::new(
+            Box::new(VirtioBlk::new(NativeSender::new(blk_tx), block_bytes)),
+            VIRTIO_BLK_BASE..VIRTIO_BLK_END,
+        );
+
+        let host_blk = Box::new(host_blk);
+
         self.bus
             .add_device(uart)
             .add_device(virtio_net)
-            .add_device(virtio_gpu);
+            .add_device(virtio_gpu)
+            .add_device(virtio_blk);
 
         let mut device_manager = HostDeviceManager::default();
 
         device_manager
             .add_device(shell)
             .add_device(host_net)
-            .add_device(host_gpu);
+            .add_device(host_gpu)
+            .add_device(host_blk);
 
         Simulator {
             cpu: self.cpu,
@@ -115,15 +136,13 @@ impl Simulator<Initial> {
         mut self,
         canvas_ctx: CanvasRenderingContext2d,
     ) -> Simulator<WasmSetup> {
-        use crate::wasm::WasmUartReciever;
-
         let uart_reciever = WasmUartReciever::default();
         let uart = BusDevice::new(Box::new(Uart::new(uart_reciever)), UART_BASE..UART_END);
 
-        let virtio_sender = WasmGpuSender::new(canvas_ctx);
+        let gpu_sender = WasmGpuSender::new(canvas_ctx);
 
         let virtio_gpu = BusDevice::new(
-            Box::new(VirtioGpu::new(virtio_sender)),
+            Box::new(VirtioGpu::new(gpu_sender)),
             VIRTIO_GPU_BASE..VIRTIO_GPU_END,
         );
 

@@ -15,7 +15,15 @@ rv32imaのriscvシミュレータ
 1. OpenSBIをrv32ima向けにビルド
 2. Linuxカーネル(6.14)、Busyboxをrv32ima_zicntr_zicsr_zifencei_svaduをサポートするようにビルド
 3. デバイスツリーソース(platform.dts)をビルドしdtbに変換
-4. src/main.rsの内容を適切に変更
+```
+$ dtc platform.dts -o statics/platform.dtb
+# virtio-{net,blk}は無効になっているので有効にする場合はコメントを外す。
+```
+4. マウント用のファイルを作成する。
+```
+$ dd if=/dev/random of=statics/fs bs=512 count=65536
+$ mkfs.ext2 statics/fs
+```
 
 ### Linux
 ```bash

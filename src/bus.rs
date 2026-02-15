@@ -14,6 +14,7 @@ mod clint;
 mod plic;
 
 pub mod uart;
+pub mod virtio_blk;
 pub mod virtio_gpu;
 pub mod virtio_mmio;
 pub mod virtio_net;
@@ -35,6 +36,9 @@ pub const VIRTIO_NET_END: u32 = VIRTIO_NET_BASE + 0x1000;
 
 pub const VIRTIO_GPU_BASE: u32 = 0x10009000;
 pub const VIRTIO_GPU_END: u32 = VIRTIO_GPU_BASE + 0x801000;
+
+pub const VIRTIO_BLK_BASE: u32 = 0x10900000;
+pub const VIRTIO_BLK_END: u32 = VIRTIO_BLK_BASE + 0x1000;
 
 pub struct CpuContext<'a> {
     pub csr: &'a mut Csr,

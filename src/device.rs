@@ -14,6 +14,7 @@ pub enum DeviceMessage {
     Uart(char),
     Net(Vec<u8>),
     Gpu(GpuMessage),
+    Blk(Vec<u8>),
     None,
 }
 
