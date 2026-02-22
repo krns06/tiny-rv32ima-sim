@@ -6,7 +6,7 @@ use std::{
 
 use termion::{event::Key, input::TermRead, raw::IntoRawMode, screen::ToMainScreen};
 
-use crate::{device::DeviceMessage, host_device::HostDevice, native::NativeHostSender};
+use crate::{DeviceMessage, host_device::HostDevice, native::NativeHostSender};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 

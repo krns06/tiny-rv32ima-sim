@@ -5,7 +5,7 @@ use std::{
     thread,
 };
 
-use crate::{device::DeviceMessage, host_device::HostDevice, native::NativeHostReciever};
+use crate::{DeviceMessage, host_device::HostDevice, native::NativeHostReciever};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 

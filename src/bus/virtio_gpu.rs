@@ -1,4 +1,7 @@
-use crate::device::DeviceMessage;
+use crate::{
+    DeviceMessage, DeviceSenderTrait, GpuMessage, GpuOperation, GpuRect, bus::DeviceContext,
+    plic::Irq,
+};
 use std::{collections::HashMap, mem::transmute};
 
 use crate::{
@@ -9,8 +12,6 @@ use crate::{
             VirtioType, read_panic,
         },
     },
-    device::{DeviceResponse, DeviceResult, DeviceSenderTrait},
-    host_device::{GpuMessage, GpuOperation, GpuRect},
     memory::Memory,
 };
 
@@ -174,7 +175,8 @@ pub struct VitioGpuResourceFlush {
 }
 
 impl<S: DeviceSenderTrait> DeviceTrait for VirtioGpu<S> {
-    fn read(&mut self, offset: u32, size: u32, _: &mut crate::memory::Memory) -> DeviceResult<u32> {
+    #[inline]
+    fn read(&mut self, offset: u32, size: u32, ctx: DeviceContext) -> Option<u32> {
         if size != 4 {
             unimplemented!();
         }
@@ -199,31 +201,22 @@ impl<S: DeviceSenderTrait> DeviceTrait for VirtioGpu<S> {
             }
         };
 
-        Ok(DeviceResponse {
-            value,
-            is_interrupting: false,
-        })
+        Some(value)
     }
 
-    fn write(
-        &mut self,
-        offset: u32,
-        size: u32,
-        value: u32,
-        memory: &mut crate::memory::Memory,
-    ) -> DeviceResult<()> {
+    #[inline]
+    fn write(&mut self, offset: u32, size: u32, value: u32, ctx: DeviceContext) -> Option<()> {
         if size != 4 {
             unimplemented!();
         }
 
         match offset {
             VIRTIO_REG_NOTIFY => {
-                let is_interrupting = self.handle_notify(value, memory);
+                let is_interrupting = self.handle_notify(value, ctx.memory);
 
-                return Ok(DeviceResponse {
-                    value: (),
-                    is_interrupting,
-                });
+                if is_interrupting {
+                    ctx.pending_interrupts.push(self.irq());
+                }
             }
             VIRTIO_REG_STATUS => {
                 if value == 0 {
@@ -237,14 +230,11 @@ impl<S: DeviceSenderTrait> DeviceTrait for VirtioGpu<S> {
             }
         };
 
-        Ok(DeviceResponse {
-            value: (),
-            is_interrupting: false,
-        })
+        Some(())
     }
 
-    fn irq(&self) -> crate::IRQ {
-        crate::IRQ::VirtioGpu
+    fn irq(&self) -> Irq {
+        Irq::VirtioGpu
     }
 }
 
@@ -325,6 +315,7 @@ impl<S: DeviceSenderTrait> VirtioGpu<S> {
         *self = Self::new(sender);
     }
 
+    #[inline]
     fn handle_notify(&mut self, queue_idx: u32, memory: &mut Memory) -> bool {
         if queue_idx != VIRTIO_GPU_CONTROL_IDX {
             unimplemented!()
@@ -454,8 +445,6 @@ impl<S: DeviceSenderTrait> VirtioGpu<S> {
                     let resource_id = set_scanout.resource_id;
 
                     if resource_id == 0 {
-                        use crate::device::DeviceMessage;
-
                         let message = GpuMessage::new(GpuOperation::Disable, resource_id);
                         self.sender
                             .send_to_host(DeviceMessage::Gpu(message))

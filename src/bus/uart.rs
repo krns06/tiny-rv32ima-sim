@@ -1,12 +1,9 @@
 use std::io::Write;
 
-use crate::device::DeviceMessage;
-use crate::{
-    Result,
-    bus::DeviceTrait,
-    device::{DeviceRecieverTrait, DeviceResponse},
-    memory::Memory,
-};
+use crate::bus::DeviceContext;
+use crate::plic::Irq;
+use crate::{DeviceMessage, DeviceRecieverTrait};
+use crate::{bus::DeviceTrait, memory::Memory};
 
 #[allow(unused)]
 const IER_ERBFI: u8 = 1; // 受け取ったときの例外のIEのbit
@@ -44,7 +41,7 @@ where
 
 impl<R: DeviceRecieverTrait> DeviceTrait for Uart<R> {
     #[inline]
-    fn read(&mut self, offset: u32, size: u32, _: &mut Memory) -> Result<DeviceResponse<u32>> {
+    fn read(&mut self, offset: u32, size: u32, ctx: DeviceContext) -> Option<u32> {
         if size != 1 {
             unimplemented!();
         }
@@ -97,20 +94,15 @@ impl<R: DeviceRecieverTrait> DeviceTrait for Uart<R> {
             _ => 0,
         } as u32;
 
-        Ok(DeviceResponse {
-            value,
-            is_interrupting: self.is_interrupting,
-        })
+        if self.is_interrupting {
+            ctx.pending_interrupts.push(self.irq());
+        }
+
+        Some(value)
     }
 
     #[inline]
-    fn write(
-        &mut self,
-        offset: u32,
-        size: u32,
-        value: u32,
-        _: &mut Memory,
-    ) -> Result<DeviceResponse<()>> {
+    fn write(&mut self, offset: u32, size: u32, value: u32, ctx: DeviceContext) -> Option<()> {
         if size != 1 {
             unimplemented!()
         }
@@ -169,19 +161,18 @@ impl<R: DeviceRecieverTrait> DeviceTrait for Uart<R> {
             _ => {}
         }
 
-        Ok(DeviceResponse {
-            value: (),
-            is_interrupting: self.is_interrupting,
-        })
+        if self.is_interrupting {
+            ctx.pending_interrupts.push(self.irq());
+        }
+
+        Some(())
     }
 
-    #[inline]
-    fn irq(&self) -> crate::IRQ {
-        crate::IRQ::Uart
+    fn irq(&self) -> Irq {
+        Irq::Uart
     }
 
-    #[inline]
-    fn take_interrupt(&mut self) {
+    fn prepare_interrupt(&mut self) {
         self.is_taken_interrupt = true;
     }
 
@@ -233,33 +224,28 @@ impl<R: DeviceRecieverTrait> Uart<R> {
         }
     }
 
-    #[inline]
     fn is_dlab_enabled(&self) -> bool {
         self.lcr >> 7 == 1
     }
 
-    #[inline]
     pub fn push_char(&mut self, c: char) {
         self.rbr = c as u8;
         self.lsr |= LSR_DR;
         self.raise_interrupt(IIR_RDA);
     }
 
-    #[inline]
     fn raise_interrupt(&mut self, iir: u8) {
         self.is_interrupting = true;
         self.is_taken_interrupt = false;
         self.iir = iir;
     }
 
-    #[inline]
     fn lower_interrupt(&mut self) {
         self.is_interrupting = false;
         self.iir = IIR_NIP;
         self.lsr = LSR_THRE | LSR_TEMT;
     }
 
-    #[inline]
     pub fn is_ready_for_recieving(&self) -> bool {
         self.iir == 1 && self.ier & 0x4 != 0
     }

@@ -1,53 +1,54 @@
-use crate::{AccessType, Priv};
+use crate::AccessType;
 
-const TLB_SIZE: usize = 4096;
+const TLB_SIZE: usize = 512;
 const TLB_MASK: u32 = (TLB_SIZE - 1) as u32;
 
 pub struct Tlb {
-    entries: [Option<TlbEntry>; TLB_SIZE], // vpnがキーに成る。
+    read_entries: [Option<TlbEntry>; TLB_SIZE],
+    write_entries: [Option<TlbEntry>; TLB_SIZE],
+    exec_entries: [Option<TlbEntry>; TLB_SIZE],
 }
 
 #[derive(Clone, Copy)]
 pub struct TlbEntry {
-    prv: Priv,
     ppn: u32,
     vpn: u32,
-    satp: u32,
-    access_type: AccessType,
 }
 
 impl Default for Tlb {
     fn default() -> Self {
         Self {
-            entries: [None; TLB_SIZE],
+            read_entries: [None; TLB_SIZE],
+            write_entries: [None; TLB_SIZE],
+            exec_entries: [None; TLB_SIZE],
         }
     }
 }
 
 impl Tlb {
-    pub fn register_entry(&mut self, entry: TlbEntry) {
+    pub fn register_entry(&mut self, entry: TlbEntry, access_type: AccessType) {
         let vpn = entry.vpn;
         let i = (vpn & TLB_MASK) as usize;
 
-        self.entries[i] = Some(entry);
+        match access_type {
+            AccessType::Read => self.read_entries[i] = Some(entry),
+            AccessType::Write => self.write_entries[i] = Some(entry),
+            AccessType::Fetch => self.exec_entries[i] = Some(entry),
+        }
     }
 
-    pub fn lookup_ppn(
-        &self,
-        va: u32,
-        prv: Priv,
-        satp: u32,
-        access_type: AccessType,
-    ) -> Option<&TlbEntry> {
+    pub fn lookup_ppn(&self, va: u32, access_type: AccessType) -> Option<&TlbEntry> {
         let vpn = va >> 12;
         let i = (vpn & TLB_MASK) as usize;
 
-        if let Some(ref entry) = self.entries[i] {
-            if entry.vpn == vpn
-                && entry.prv == prv
-                && entry.satp == satp
-                && entry.access_type == access_type
-            {
+        let entry = match access_type {
+            AccessType::Read => &self.read_entries[i],
+            AccessType::Write => &self.write_entries[i],
+            AccessType::Fetch => &self.exec_entries[i],
+        };
+
+        if let Some(entry) = entry {
+            if entry.vpn == vpn {
                 return Some(entry);
             }
         }
@@ -56,19 +57,15 @@ impl Tlb {
     }
 
     pub fn clear(&mut self) {
-        self.entries = [None; TLB_SIZE];
+        self.read_entries = [None; TLB_SIZE];
+        self.write_entries = [None; TLB_SIZE];
+        self.exec_entries = [None; TLB_SIZE];
     }
 }
 
 impl TlbEntry {
-    pub fn new(va: u32, ppn: u32, prv: Priv, satp: u32, access_type: AccessType) -> Self {
-        Self {
-            prv,
-            ppn,
-            vpn: va >> 12,
-            satp,
-            access_type,
-        }
+    pub fn new(va: u32, ppn: u32) -> Self {
+        Self { ppn, vpn: va >> 12 }
     }
 
     pub fn ppn(&self) -> u32 {

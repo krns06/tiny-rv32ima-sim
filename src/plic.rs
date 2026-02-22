@@ -1,4 +1,6 @@
-use crate::{IRQ, Priv, Result, csr::Csr};
+use std::collections::VecDeque;
+
+use crate::{Priv, Result, csr::Csr};
 
 const PLIC_MAX_NUM: u32 = 1024;
 const PLIC_CONTEXT_MAX_NUM: u32 = 15872;
@@ -19,6 +21,20 @@ const PLIC_THREADSHOLD_UNIT: u32 = 0x1000;
 const PLIC_CLAIM_END: u32 =
     PLIC_THREADSHOLD_BASE + PLIC_CONTEXT_MAX_NUM * PLIC_THREADSHOLD_UNIT + 4;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Irq {
+    None = 0,
+    VirtioNet = 1,
+    VirtioGpu = 2,
+    VirtioBlk = 3,
+    Uart = 0xa,
+}
+
+#[derive(Default)]
+pub struct IrqQueue {
+    queue: VecDeque<Irq>,
+}
+
 #[derive(Default, Debug)]
 pub struct Plic {
     priories: [u32; PLIC_NUM as usize],
@@ -26,13 +42,40 @@ pub struct Plic {
     enables: [[u32; (PLIC_NUM / 32) as usize]; 2],
     threasholds: [u32; PLIC_CONTEXT_NUM as usize],
 
-    interrupting_irq: Option<IRQ>,
+    interrupting_irq: Option<Irq>,
     interrupting_ctx: Option<usize>,
+}
+
+impl From<usize> for Irq {
+    fn from(value: usize) -> Self {
+        match value {
+            0 => Self::None,
+            1 => Self::VirtioNet,
+            2 => Self::VirtioGpu,
+            3 => Self::VirtioBlk,
+            0xa => Self::Uart,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl IrqQueue {
+    pub fn push(&mut self, irq: Irq) {
+        self.queue.push_back(irq);
+    }
+
+    pub fn pop(&mut self) -> Option<Irq> {
+        self.queue.pop_front()
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
 }
 
 impl Plic {
     #[inline]
-    pub fn read(&mut self, offset: u32, size: u32, _: &mut Csr) -> Result<u32> {
+    pub fn read(&mut self, offset: u32, size: u32) -> Result<u32> {
         if size != 4 {
             unimplemented!()
         }
@@ -79,7 +122,7 @@ impl Plic {
     }
 
     #[inline]
-    pub fn write(&mut self, offset: u32, size: u32, value: u32, csr: &mut Csr) -> Result<()> {
+    pub fn write(&mut self, offset: u32, value: u32, size: u32, csr: &mut Csr) -> Result<()> {
         if size != 4 {
             unimplemented!();
         }
@@ -143,7 +186,7 @@ impl Plic {
 
 impl Plic {
     #[inline]
-    pub fn set_pending(&mut self, irq: IRQ) {
+    pub fn set_pending(&mut self, irq: Irq) {
         let irq = irq as usize;
         let idx = irq / 32;
         let bit = 1 << (irq % 32);
@@ -152,7 +195,7 @@ impl Plic {
     }
 
     #[inline]
-    fn unset_pending(&mut self, irq: IRQ) {
+    fn unset_pending(&mut self, irq: Irq) {
         let irq = irq as usize;
         let idx = irq / 32;
         let bit = 1 << (irq % 32);
@@ -163,9 +206,9 @@ impl Plic {
     // 割り込みが起こっているものを調べる関数
     // 何回も呼ぶとめっちゃ重くなるので割り込みが起こっているとわかっている場面で呼ぶべき
     #[inline]
-    pub fn find_interrupt_active(&self) -> (u32, IRQ, usize) {
+    pub fn find_interrupt_active(&self) -> (u32, Irq, usize) {
         let mut max_priority = 0;
-        let mut target_irq = IRQ::None;
+        let mut target_irq = Irq::None;
         let mut target_ctx = 0;
 
         for irq in 0..PLIC_NUM {
@@ -202,7 +245,7 @@ impl Plic {
 
         // デバイス的には割り込みが起こってもいい場面で
         // 条件が揃わない場合はNoneを返し、条件が揃った瞬間に外部割り込みを起こす
-        if irq == IRQ::None {
+        if irq == Irq::None {
             return None;
         }
 
@@ -218,8 +261,7 @@ impl Plic {
         }
     }
 
-    #[inline]
-    pub fn lower_interrupt(&mut self) -> IRQ {
+    pub fn lower_interrupt(&mut self) -> Irq {
         let irq = self.interrupting_irq.unwrap();
 
         self.unset_pending(irq);
@@ -227,8 +269,7 @@ impl Plic {
         irq
     }
 
-    #[inline]
-    pub fn interrupting_irq(&self) -> Option<IRQ> {
+    pub fn interrupting_irq(&self) -> Option<Irq> {
         self.interrupting_irq
     }
 }

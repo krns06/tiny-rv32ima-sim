@@ -9,7 +9,7 @@
     };
 
     chosen {
-      bootargs = "earlycon=uart8250,mmio,0x10000000 console=tty0 console=ttyS0 rw init=/init mem=64M";
+      bootargs = "earlycon=uart8250,mmio,0x10000000 console=tty0 console=ttyS0 rw init=/init mem=64m";
       // bootargs = "earlycon=framebuffer0 console=tty0 rw init=/init mem=64m";
       stdout-path = "/soc/serial@10000000";
 		  // stdout-path = "framebuffer0";

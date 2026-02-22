@@ -1,11 +1,16 @@
 use std::mem::transmute;
 
 use crate::{
-    bus::virtio_mmio::{
-        VIRTIO_REG_CONFIG, VIRTIO_REG_NOTIFY, VIRTIO_REG_STATUS, VirtioMmio, VirtioType, read_panic,
+    DeviceMessage, DeviceSenderTrait,
+    bus::{
+        DeviceContext, DeviceTrait,
+        virtio_mmio::{
+            VIRTIO_REG_CONFIG, VIRTIO_REG_NOTIFY, VIRTIO_REG_STATUS, VirtioMmio, VirtioType,
+            read_panic,
+        },
     },
-    device::{DeviceMessage, DeviceResponse, DeviceSenderTrait, DeviceTrait},
-    memory::{self, Memory},
+    memory::Memory,
+    plic::Irq,
 };
 
 const FEATURES: [u32; 4] = [1 << 9, 1, 0, 0]; // VIRTIO_BLK_F_FLUSH
@@ -45,12 +50,8 @@ pub struct VirtioBlkReq {
 }
 
 impl<S: DeviceSenderTrait> DeviceTrait for VirtioBlk<S> {
-    fn read(
-        &mut self,
-        offset: u32,
-        size: u32,
-        memory: &mut crate::memory::Memory,
-    ) -> crate::device::DeviceResult<u32> {
+    #[inline]
+    fn read(&mut self, offset: u32, size: u32, ctx: DeviceContext) -> Option<u32> {
         match offset {
             0..VIRTIO_REG_CONFIG => self.virtio.read(offset, size),
             _ => {
@@ -62,21 +63,13 @@ impl<S: DeviceSenderTrait> DeviceTrait for VirtioBlk<S> {
                     _ => read_panic(offset + VIRTIO_REG_CONFIG),
                 };
 
-                Ok(DeviceResponse {
-                    value,
-                    is_interrupting: false,
-                })
+                Some(value)
             }
         }
     }
 
-    fn write(
-        &mut self,
-        offset: u32,
-        size: u32,
-        value: u32,
-        memory: &mut crate::memory::Memory,
-    ) -> crate::device::DeviceResult<()> {
+    #[inline]
+    fn write(&mut self, offset: u32, size: u32, value: u32, ctx: DeviceContext) -> Option<()> {
         match offset {
             VIRTIO_REG_STATUS => {
                 if value == 0 {
@@ -86,26 +79,22 @@ impl<S: DeviceSenderTrait> DeviceTrait for VirtioBlk<S> {
                 }
             }
             VIRTIO_REG_NOTIFY => {
-                let is_interrupting = self.handle_notify(value, memory);
+                let is_interrupting = self.handle_notify(value, ctx.memory);
 
-                return Ok(DeviceResponse {
-                    value: (),
-                    is_interrupting,
-                });
+                if is_interrupting {
+                    ctx.pending_interrupts.push(self.irq());
+                }
             }
             _ => {
                 self.virtio.write(offset, size, value)?;
             }
         };
 
-        Ok(DeviceResponse {
-            value: (),
-            is_interrupting: false,
-        })
+        Some(())
     }
 
-    fn irq(&self) -> crate::IRQ {
-        crate::IRQ::VirtioBlk
+    fn irq(&self) -> Irq {
+        Irq::VirtioBlk
     }
 }
 
@@ -127,6 +116,7 @@ impl<S: DeviceSenderTrait> VirtioBlk<S> {
         *self = Self::new(sender, bytes);
     }
 
+    #[inline]
     pub fn handle_notify(&mut self, queue_idx: u32, memory: &mut Memory) -> bool {
         if queue_idx != 0 {
             // requestq1出ない場合はとりあえず終了する。

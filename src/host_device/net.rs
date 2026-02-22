@@ -4,13 +4,12 @@ use std::{
     io::{Read, Write},
     os::fd::AsRawFd,
     thread,
-    time::Duration,
 };
 
 use nix::libc::{self, TUNSETIFF, ioctl};
 
 use crate::{
-    device::DeviceMessage,
+    DeviceMessage,
     host_device::HostDevice,
     native::{NativeHostReciever, NativeHostSender},
 };

@@ -4,8 +4,7 @@ use wasm_bindgen::{Clamped, JsCast, prelude::wasm_bindgen};
 use web_sys::{CanvasRenderingContext2d, ImageData, Window, console, window};
 
 use crate::{
-    device::{DeviceMessage, DeviceRecieverTrait, DeviceSenderTrait},
-    host_device::{GpuMessage, GpuOperation},
+    DeviceMessage, DeviceRecieverTrait, DeviceSenderTrait, GpuOperation,
     simulator::{self, Simulator, WasmLoaded},
 };
 
@@ -37,7 +36,7 @@ impl Default for WasmGpuSender {
 impl DeviceSenderTrait for WasmGpuSender {
     type E = ();
 
-    fn send_to_host(&mut self, message: crate::device::DeviceMessage) -> Result<(), Self::E> {
+    fn send_to_host(&mut self, message: crate::DeviceMessage) -> Result<(), Self::E> {
         if let DeviceMessage::Gpu(message) = message {
             if message.operation == GpuOperation::Copy {
                 let size = message.buffer.len() * 4;

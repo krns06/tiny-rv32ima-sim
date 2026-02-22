@@ -91,13 +91,11 @@ impl Memory {
         ()
     }
 
-    #[inline]
     pub fn raw_ptr(&self, addr: usize, size: usize) -> &[u8] {
         let offset = addr - MEMORY_BASE as usize;
         &self.array[offset..offset + size]
     }
 
-    #[inline]
     pub fn view_as<T>(&self, addr: usize, len: usize) -> &T {
         let size = size_of::<T>();
 
@@ -110,13 +108,11 @@ impl Memory {
         unsafe { transmute(ptr.as_ptr()) }
     }
 
-    #[inline]
     pub fn raw_mut_ptr(&mut self, addr: usize, size: usize) -> &mut [u8] {
         let offset = addr - MEMORY_BASE as usize;
         &mut self.array[offset..offset + size]
     }
 
-    #[inline]
     pub fn mut_view_as<T>(&mut self, addr: usize, len: usize) -> &mut T {
         let size = size_of::<T>();
 

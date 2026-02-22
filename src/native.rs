@@ -1,6 +1,6 @@
 use std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError};
 
-use crate::device::{DeviceMessage, DeviceRecieverTrait, DeviceSenderTrait};
+use crate::{DeviceMessage, DeviceRecieverTrait, DeviceSenderTrait};
 
 pub type NativeHostSender = Sender<DeviceMessage>;
 pub type NativeHostReciever = Receiver<DeviceMessage>;

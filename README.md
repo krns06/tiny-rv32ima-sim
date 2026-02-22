@@ -29,6 +29,7 @@ $ mkfs.ext2 statics/fs
 ```bash
 $ cargo r --release 2> /dev/null
 # 標準エラーにログが出力されるので破棄する。
+# ctrl-dで終了できる。
 ```
 
 ### WASM

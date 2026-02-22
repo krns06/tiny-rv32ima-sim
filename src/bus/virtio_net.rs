@@ -1,15 +1,16 @@
 use std::mem::transmute;
 
 use crate::{
+    DeviceMessage, DeviceRecieverTrait, DeviceSenderTrait,
     bus::{
-        DeviceTrait,
+        DeviceContext, DeviceTrait,
         virtio_mmio::{
             VIRTIO_REG_CONFIG, VIRTIO_REG_NOTIFY, VIRTIO_REG_STATUS, VirtioMmio, VirtioType,
             read_panic,
         },
     },
-    device::{DeviceMessage, DeviceRecieverTrait, DeviceResponse, DeviceResult, DeviceSenderTrait},
     memory::Memory,
+    plic::Irq,
 };
 
 const VIRTIO_NET_HEADER_SIZE: usize = size_of::<VirtioNetHeader>();
@@ -54,7 +55,7 @@ where
     R: DeviceRecieverTrait,
 {
     #[inline]
-    fn read(&mut self, offset: u32, size: u32, _: &mut Memory) -> DeviceResult<u32> {
+    fn read(&mut self, offset: u32, size: u32, ctx: DeviceContext) -> Option<u32> {
         match offset {
             0..VIRTIO_REG_CONFIG => self.virtio.read(offset, size),
             _ => {
@@ -69,30 +70,20 @@ where
                     _ => read_panic(offset + VIRTIO_REG_CONFIG),
                 };
 
-                Ok(DeviceResponse {
-                    value,
-                    is_interrupting: false,
-                })
+                Some(value)
             }
         }
     }
 
     #[inline]
-    fn write(
-        &mut self,
-        offset: u32,
-        size: u32,
-        value: u32,
-        memory: &mut Memory,
-    ) -> DeviceResult<()> {
+    fn write(&mut self, offset: u32, size: u32, value: u32, ctx: DeviceContext) -> Option<()> {
         match offset {
             VIRTIO_REG_NOTIFY => {
-                let is_interrupting = self.handle_notify(value, memory);
+                let is_interrupting = self.handle_notify(value, ctx.memory);
 
-                return Ok(DeviceResponse {
-                    value: (),
-                    is_interrupting,
-                });
+                if is_interrupting {
+                    ctx.pending_interrupts.push(self.irq());
+                }
             } // Notify
             VIRTIO_REG_STATUS => {
                 if value == 0 {
@@ -106,16 +97,14 @@ where
             }
         };
 
-        Ok(DeviceResponse {
-            value: (),
-            is_interrupting: false,
-        })
+        Some(())
     }
 
-    fn irq(&self) -> crate::IRQ {
-        crate::IRQ::VirtioNet
+    fn irq(&self) -> Irq {
+        Irq::VirtioNet
     }
 
+    #[inline]
     fn tick(&mut self, memory: &mut Memory) -> bool {
         if !self.virtio.is_ready(VIRTIO_NET_RECV_IDX) {
             return false;

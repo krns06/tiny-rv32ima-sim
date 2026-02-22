@@ -1,17 +1,13 @@
 use std::{collections::VecDeque, ops::Range};
 
 #[cfg(target_arch = "wasm32")]
-use crate::device::DeviceMessage;
+use crate::DeviceMessage;
 use crate::{
-    AccessType, IRQ, Priv, Result, Trap,
-    bus::{clint::Clint, plic::Plic},
+    AccessType, Result, Trap,
     csr::Csr,
-    device::DeviceTrait,
     memory::Memory,
+    plic::{Irq, IrqQueue},
 };
-
-mod clint;
-mod plic;
 
 pub mod uart;
 pub mod virtio_blk;
@@ -21,12 +17,6 @@ pub mod virtio_net;
 
 pub const MEMORY_BASE: u32 = 0x80000000;
 pub const MEMORY_END: u32 = 0x90000000;
-
-const CLINT_BASE: u32 = 0x2000000;
-const CLINT_END: u32 = CLINT_BASE + 0x10000;
-
-const PLIC_BASE: u32 = 0xc000000;
-const PLIC_END: u32 = PLIC_BASE + 0x4000000;
 
 pub const UART_BASE: u32 = 0x10000000;
 pub const UART_END: u32 = UART_BASE + 0x100;
@@ -42,9 +32,37 @@ pub const VIRTIO_BLK_END: u32 = VIRTIO_BLK_BASE + 0x1000;
 
 pub struct CpuContext<'a> {
     pub csr: &'a mut Csr,
+    pub pending_interrupts: &'a mut IrqQueue,
 
     pub is_walk: bool,
     pub access_type: AccessType,
+}
+
+pub struct DeviceContext<'a> {
+    pub pending_interrupts: &'a mut IrqQueue,
+    pub memory: &'a mut Memory,
+}
+
+// 仮想デバイスについてのトレイト
+pub trait DeviceTrait {
+    fn read(&mut self, offset: u32, size: u32, ctx: DeviceContext) -> Option<u32>;
+    fn write(&mut self, offset: u32, size: u32, value: u32, ctx: DeviceContext) -> Option<()>;
+
+    fn irq(&self) -> Irq;
+
+    // 割り込みが起こったときのみ行う必要があるもののフラグの切り替えに使用する関数
+    fn prepare_interrupt(&mut self) {}
+
+    // イベントループからメッセージをデバイスに通知するときに使われる関数
+    // そのデバイス向けではない場合は受け取るべきではない。
+    #[cfg(target_arch = "wasm32")]
+    fn handle_incoming(&mut self, message: &DeviceMessage) {}
+
+    // tickごとに実行される関数
+    // 外部割り込みが有効な場合に実行される
+    fn tick(&mut self, _: &mut Memory) -> bool {
+        false
+    }
 }
 
 pub struct BusDevice {
@@ -55,12 +73,7 @@ pub struct BusDevice {
 pub struct Bus {
     memory: Memory,
 
-    clint: Clint,
-    plic: Plic,
-
     devices: Vec<BusDevice>,
-
-    irqs_to_raise: VecDeque<IRQ>,
 
     #[cfg(target_arch = "wasm32")]
     incoming_messages: VecDeque<DeviceMessage>,
@@ -82,15 +95,10 @@ impl<'a> CpuContext<'a> {
 impl Default for Bus {
     fn default() -> Self {
         let memory = Memory::default();
-        let clint = Clint::default();
-        let plic = Plic::default();
 
         Self {
             memory,
-            clint,
-            plic,
             devices: Vec::new(),
-            irqs_to_raise: VecDeque::new(),
             #[cfg(target_arch = "wasm32")]
             incoming_messages: VecDeque::new(),
         }
@@ -100,67 +108,45 @@ impl Default for Bus {
 impl Bus {
     #[inline]
     pub fn read(&mut self, addr: u32, size: u32, ctx: CpuContext) -> Result<u32> {
-        match addr {
-            CLINT_BASE..CLINT_END => self.clint.read(addr - CLINT_BASE, size, ctx.csr),
-            PLIC_BASE..PLIC_END => self.plic.read(addr - PLIC_BASE, size, ctx.csr),
-            MEMORY_BASE..MEMORY_END => {
-                self.memory
-                    .read(addr - MEMORY_BASE, size, ctx.access_type, ctx.is_walk)
-            }
-            _ => {
-                for i in 0..self.devices.len() {
-                    if self.devices[i].range.contains(&addr) {
-                        let offset = addr - self.devices[i].range.start;
-                        let res = self.devices[i]
-                            .device
-                            //[todo] read内でaccess_type事に例外を出すように変更する。
-                            .read(offset, size, &mut self.memory)?;
-
-                        if res.is_interrupting {
-                            let irq = self.devices[i].device.irq();
-                            self.irqs_to_raise.push_back(irq);
-                        }
-                        return Ok(res.value);
-                    }
+        for i in 0..self.devices.len() {
+            if self.devices[i].range.contains(&addr) {
+                let offset = addr - self.devices[i].range.start;
+                if let Some(v) = self.devices[i].device.read(
+                    offset,
+                    size,
+                    DeviceContext {
+                        pending_interrupts: ctx.pending_interrupts,
+                        memory: &mut self.memory,
+                    },
+                ) {
+                    return Ok(v);
                 }
-
-                Err(ctx.make_trap())
             }
         }
+
+        Err(ctx.make_trap())
     }
 
     #[inline]
     pub fn write(&mut self, addr: u32, size: u32, value: u32, ctx: CpuContext) -> Result<()> {
-        match addr {
-            CLINT_BASE..CLINT_END => self.clint.write(addr - CLINT_BASE, size, value, ctx.csr),
-            PLIC_BASE..PLIC_END => self.plic.write(addr - PLIC_BASE, size, value, ctx.csr),
-            MEMORY_BASE..MEMORY_END => self.memory.write(
-                addr - MEMORY_BASE,
-                size,
-                value,
-                ctx.access_type,
-                ctx.is_walk,
-            ),
-            _ => {
-                for i in 0..self.devices.len() {
-                    if self.devices[i].range.contains(&addr) {
-                        let offset = addr - self.devices[i].range.start;
-                        let res =
-                            self.devices[i]
-                                .device
-                                .write(offset, size, value, &mut self.memory)?;
-
-                        if res.is_interrupting {
-                            let irq = self.devices[i].device.irq();
-                            self.irqs_to_raise.push_back(irq);
-                        }
-                        return Ok(res.value);
-                    }
+        for i in 0..self.devices.len() {
+            if self.devices[i].range.contains(&addr) {
+                let offset = addr - self.devices[i].range.start;
+                if let Some(_) = self.devices[i].device.write(
+                    offset,
+                    size,
+                    value,
+                    DeviceContext {
+                        pending_interrupts: ctx.pending_interrupts,
+                        memory: &mut self.memory,
+                    },
+                ) {
+                    return Ok(());
                 }
-
-                Err(ctx.make_trap())
             }
         }
+
+        Err(ctx.make_trap())
     }
 
     pub fn add_device(&mut self, device: BusDevice) -> &mut Self {
@@ -170,11 +156,7 @@ impl Bus {
     }
 
     #[inline]
-    pub fn tick(&mut self, prv: Priv, csr: &mut Csr) {
-        if !csr.can_external_interrupt(prv) {
-            return;
-        }
-
+    pub fn tick(&mut self, pending_interrupts: &mut IrqQueue) {
         #[cfg(target_arch = "wasm32")]
         let message = self
             .incoming_messages
@@ -188,43 +170,16 @@ impl Bus {
             let is_interrupting = device.device.tick(&mut self.memory);
 
             if is_interrupting {
-                self.irqs_to_raise.push_back(device.device.irq());
-            }
-        }
-
-        if self.irqs_to_raise.len() != 0 {
-            let irq = self.irqs_to_raise.pop_front().unwrap();
-            self.raise_irq(irq);
-            self.raise_interrupt(csr);
-            return;
-        } else {
-            csr.set_mip_seip(0);
-        }
-    }
-
-    #[inline]
-    fn raise_irq(&mut self, irq: IRQ) {
-        self.plic.set_pending(irq);
-    }
-
-    #[inline]
-    fn raise_interrupt(&mut self, csr: &mut Csr) {
-        if let Some(prv) = self.plic.raise_interrupt() {
-            match prv {
-                Priv::Machine => csr.set_mip_meip(1),
-                Priv::Supervisor => csr.set_mip_seip(1),
-                _ => unreachable!(),
+                pending_interrupts.push(device.device.irq());
             }
         }
     }
 
     #[inline]
-    pub fn prepare_interrupt(&mut self) {
-        let irq = self.plic.interrupting_irq().unwrap();
-
+    pub fn prepare_interrupt(&mut self, irq: Irq) {
         for i in 0..self.devices.len() {
             if self.devices[i].device.irq() == irq {
-                self.devices[i].device.take_interrupt();
+                self.devices[i].device.prepare_interrupt();
                 return;
             }
         }

@@ -19,7 +19,7 @@ use crate::host_device::{gpu::HostGpu, net::HostNet, shell::Shell};
 
 #[cfg(target_arch = "wasm32")]
 use crate::{
-    DeviceMessage,
+    device::DeviceMessage,
     wasm::{WasmGpuSender, WasmUartReciever},
 };
 #[cfg(target_arch = "wasm32")]
@@ -136,8 +136,6 @@ impl Simulator<Initial> {
         mut self,
         canvas_ctx: CanvasRenderingContext2d,
     ) -> Simulator<WasmSetup> {
-        use crate::wasm::WasmBlkSender;
-
         let uart_reciever = WasmUartReciever::default();
         let uart = BusDevice::new(Box::new(Uart::new(uart_reciever)), UART_BASE..UART_END);
 
@@ -148,17 +146,7 @@ impl Simulator<Initial> {
             VIRTIO_GPU_BASE..VIRTIO_GPU_END,
         );
 
-        //let block_bytes = include_bytes!("../statics/fs");
-        //let virtio_blk = BusDevice::new(
-        //    Box::new(VirtioBlk::new(
-        //        WasmBlkSender::default(),
-        //        block_bytes.to_vec(),
-        //    )),
-        //    VIRTIO_BLK_BASE..VIRTIO_BLK_END,
-        //);
-
         self.bus.add_device(uart).add_device(virtio_gpu);
-        // .add_device(virtio_blk);
 
         Simulator {
             cpu: self.cpu,

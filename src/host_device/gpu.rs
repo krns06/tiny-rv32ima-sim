@@ -2,11 +2,7 @@ use std::error::Error;
 
 use minifb::{Key, Window, WindowOptions};
 
-use crate::{
-    device::DeviceMessage,
-    host_device::{GpuOperation, HostDevice},
-    native::NativeHostReciever,
-};
+use crate::{DeviceMessage, GpuOperation, host_device::HostDevice, native::NativeHostReciever};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 

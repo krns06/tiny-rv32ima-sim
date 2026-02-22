@@ -1,5 +1,3 @@
-use std::fmt::Debug;
-
 #[cfg(not(target_arch = "wasm32"))]
 pub mod blk;
 #[cfg(not(target_arch = "wasm32"))]
@@ -15,7 +13,7 @@ pub trait HostDevice: Send {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub trait HostDevice: Debug {}
+pub trait HostDevice: std::fmt::Debug {}
 
 #[derive(Default)]
 pub struct HostDeviceManager {
@@ -31,49 +29,5 @@ impl HostDeviceManager {
         self.devices.push(device);
 
         self
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum GpuOperation {
-    Copy,
-    Disable,
-    Flush,
-}
-
-#[derive(Debug, Default)]
-pub struct GpuRect {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
-}
-
-impl GpuRect {
-    fn start(&self) -> usize {
-        (self.x + self.y * self.width) as usize
-    }
-
-    fn end(&self) -> usize {
-        self.start() + (self.width * self.height) as usize
-    }
-}
-
-#[derive(Debug)]
-pub struct GpuMessage {
-    pub operation: GpuOperation,
-    pub resource_id: u32,
-    pub rect: GpuRect,
-    pub buffer: Vec<u32>,
-}
-
-impl GpuMessage {
-    pub fn new(operation: GpuOperation, resource_id: u32) -> Self {
-        Self {
-            operation,
-            resource_id,
-            rect: GpuRect::default(),
-            buffer: Vec::new(),
-        }
     }
 }

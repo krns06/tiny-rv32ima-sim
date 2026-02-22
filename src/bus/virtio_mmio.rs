@@ -1,9 +1,6 @@
 use std::mem::transmute;
 
-use crate::{
-    device::{DeviceResponse, DeviceResult},
-    memory::Memory,
-};
+use crate::memory::Memory;
 
 pub const VIRTIO_REG_QUEUE_READY: u32 = 0x44;
 pub const VIRTIO_REG_NOTIFY: u32 = 0x50;
@@ -109,7 +106,7 @@ impl VirtioMmio {
     }
 
     #[inline]
-    pub fn read(&mut self, offset: u32, size: u32) -> DeviceResult<u32> {
+    pub fn read(&mut self, offset: u32, size: u32) -> Option<u32> {
         if size != 4 {
             unimplemented!();
         }
@@ -134,14 +131,11 @@ impl VirtioMmio {
             _ => read_panic(offset),
         };
 
-        Ok(DeviceResponse {
-            value,
-            is_interrupting: false,
-        })
+        Some(value)
     }
 
     #[inline]
-    pub fn write(&mut self, offset: u32, size: u32, value: u32) -> DeviceResult<()> {
+    pub fn write(&mut self, offset: u32, size: u32, value: u32) -> Option<()> {
         if size != 4 {
             unimplemented!()
         }
@@ -208,10 +202,7 @@ impl VirtioMmio {
             _ => write_panic(offset, value),
         }
 
-        Ok(DeviceResponse {
-            value: (),
-            is_interrupting: false,
-        })
+        Some(())
     }
 
     pub fn set_failed(&mut self) {

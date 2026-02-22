@@ -2,11 +2,18 @@ use std::fmt::Display;
 
 use crate::{
     AccessType, Priv, Result, Trap,
-    bus::{Bus, CpuContext},
+    bus::{Bus, CpuContext, MEMORY_BASE, MEMORY_END},
     csr::Csr,
     illegal,
+    plic::{Irq, IrqQueue, Plic},
     tlb::{Tlb, TlbEntry},
 };
+
+const CLINT_BASE: u32 = 0x2000000;
+const CLINT_END: u32 = CLINT_BASE + 0x10000;
+
+const PLIC_BASE: u32 = 0xc000000;
+const PLIC_END: u32 = PLIC_BASE + 0x4000000;
 
 const PTE_V: u32 = 1;
 const PTE_R: u32 = 1 << 1;
@@ -32,6 +39,23 @@ macro_rules! unimplemented {
 #[derive(Debug)]
 pub struct Registers {
     regs: [u32; 32],
+}
+
+pub struct Cpu {
+    prv: Priv, // privは予約済みらしい
+    regs: Registers,
+    pc: u32, // 当面はVirtual Address想定
+
+    // 現在実行中の命令列
+    inst: u32,
+
+    plic: Plic,
+    csr: Csr,
+    pending_interrupts: IrqQueue,
+    tlb: Tlb,
+
+    reserved_addr: Option<u32>, // For LR.W or SC.W
+    fault_addr: Option<u32>,
 }
 
 impl Default for Registers {
@@ -74,21 +98,6 @@ impl Registers {
     }
 }
 
-pub struct Cpu {
-    prv: Priv, // privは予約済みらしい
-    regs: Registers,
-    pc: u32, // 当面はVirtual Address想定
-
-    // 現在実行中の命令列
-    inst: u32,
-
-    csr: Csr,
-    tlb: Tlb,
-
-    reserved_addr: Option<u32>, // For LR.W or SC.W
-    fault_addr: Option<u32>,
-}
-
 impl Display for Cpu {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("---------- DUMP ----------\n")?;
@@ -123,7 +132,9 @@ impl Default for Cpu {
     fn default() -> Self {
         let prv = Priv::Machine;
         let regs = Registers::default();
+        let plic = Plic::default();
         let csr = Csr::default();
+        let pending_itnerrupts = IrqQueue::default();
         let tlb = Tlb::default();
 
         Self {
@@ -131,7 +142,9 @@ impl Default for Cpu {
             regs,
             pc: 0,
             inst: 0,
+            plic,
             csr,
+            pending_interrupts: pending_itnerrupts,
             tlb,
             reserved_addr: None,
             fault_addr: None,
@@ -144,14 +157,17 @@ impl Cpu {
         *self = Self::default();
     }
 
+    #[inline]
     fn read_reg(&self, reg: u32) -> u32 {
         self.regs.read(reg)
     }
 
+    #[inline]
     fn write_reg(&mut self, reg: u32, value: u32) {
         self.regs.write(reg, value)
     }
 
+    #[inline]
     fn translate_va(&mut self, va: u32, access_type: AccessType, bus: &mut Bus) -> Result<u32> {
         if !self.csr.is_paging_enabled() {
             return Ok(va);
@@ -172,10 +188,7 @@ impl Cpu {
 
         let vpn = va >> 12;
 
-        if let Some(entry) = self
-            .tlb
-            .lookup_ppn(va, local_prv, self.csr.satp, access_type)
-        {
+        if let Some(entry) = self.tlb.lookup_ppn(va, access_type) {
             return Ok(entry.ppn() | (va & 0xfff));
         }
 
@@ -199,15 +212,9 @@ impl Cpu {
             let vpn = (vpn >> (10 * i)) & 0x3ff;
             let pte_addr = addr + vpn * PTESIZE;
 
-            pte = bus.read(
-                pte_addr,
-                4,
-                crate::bus::CpuContext {
-                    csr: &mut self.csr,
-                    is_walk: true,
-                    access_type: AccessType::Read,
-                },
-            )?;
+            pte = bus
+                .memory()
+                .read(pte_addr - MEMORY_BASE, 4, AccessType::Read, true)?;
 
             let v = pte & PTE_V;
             let r = pte & PTE_R;
@@ -278,9 +285,9 @@ impl Cpu {
 
             let pa = ppn | (va & 0xfff);
 
-            let entry = TlbEntry::new(va, ppn, local_prv, self.csr.satp, access_type);
+            let entry = TlbEntry::new(va, ppn);
 
-            self.tlb.register_entry(entry);
+            self.tlb.register_entry(entry, access_type);
 
             Ok(pa)
         } else {
@@ -292,13 +299,26 @@ impl Cpu {
     pub fn read_memory(&mut self, addr: u32, size: u32, bus: &mut Bus) -> Result<u32> {
         let access_type = AccessType::Read;
         let pa = self.translate_va(addr, access_type, bus)?;
-        let ctx = CpuContext {
-            csr: &mut self.csr,
-            is_walk: false,
-            access_type,
-        };
 
-        bus.read(pa, size, ctx)
+        match pa {
+            CLINT_BASE..CLINT_END => self.read_clint(pa - CLINT_BASE, size),
+            PLIC_BASE..PLIC_END => self.plic.read(pa - PLIC_BASE, size),
+            MEMORY_BASE..MEMORY_END => {
+                // 少しコードは汚くなるが劇的に早くなった。
+                bus.memory()
+                    .read(pa - MEMORY_BASE, size, access_type, false)
+            }
+            _ => {
+                let ctx = CpuContext {
+                    csr: &mut self.csr,
+                    pending_interrupts: &mut self.pending_interrupts,
+                    is_walk: false,
+                    access_type,
+                };
+
+                bus.read(pa, size, ctx)
+            }
+        }
     }
 
     #[inline]
@@ -321,13 +341,24 @@ impl Cpu {
         let access_type = AccessType::Write;
 
         let pa = self.translate_va(addr, access_type, bus)?;
-        let ctx = CpuContext {
-            csr: &mut self.csr,
-            is_walk: false,
-            access_type,
-        };
+        match pa {
+            CLINT_BASE..CLINT_END => self.write_clint(pa - CLINT_BASE, size, value),
+            PLIC_BASE..PLIC_END => self.plic.write(pa - PLIC_BASE, value, size, &mut self.csr),
+            MEMORY_BASE..MEMORY_END => {
+                bus.memory()
+                    .write(pa - MEMORY_BASE, size, value, access_type, false)
+            }
+            _ => {
+                let ctx = CpuContext {
+                    csr: &mut self.csr,
+                    pending_interrupts: &mut self.pending_interrupts,
+                    is_walk: false,
+                    access_type,
+                };
 
-        bus.write(pa, size, value, ctx)
+                bus.write(pa, size, value, ctx)
+            }
+        }
     }
 
     #[inline]
@@ -353,6 +384,44 @@ impl Cpu {
     #[inline]
     pub fn write_csr(&mut self, csr: u32, value: u32) -> Result<()> {
         self.csr.write(csr, value, self.prv)
+    }
+
+    #[inline]
+    pub fn read_clint(&self, offset: u32, size: u32) -> Result<u32> {
+        if size != 4 {
+            unimplemented!();
+        }
+
+        match offset {
+            0 => Ok(self.csr.get_mip_msip()),
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline]
+    pub fn write_clint(&mut self, offset: u32, size: u32, value: u32) -> Result<()> {
+        if size != 4 {
+            unimplemented!();
+        }
+
+        match offset {
+            0 => {
+                // msip
+                let msip = value & 0x1;
+                self.csr.set_mip_msip(msip);
+            }
+            0x4000 => {
+                // mtimecmp
+                self.csr.set_mtimecmp(value);
+            }
+            0x4004 => {
+                // mtimecmph
+                self.csr.set_mtimecmph(value);
+            }
+            _ => unreachable!(),
+        }
+
+        Ok(())
     }
 
     // jump命令: Ok(true) 他の命令: Ok(false)
@@ -894,15 +963,9 @@ impl Cpu {
         let next_pc = self.translate_va(self.pc, AccessType::Fetch, bus)?;
 
         if next_pc % 4 == 0 {
-            let inst = bus.read(
-                next_pc,
-                4,
-                crate::bus::CpuContext {
-                    csr: &mut self.csr,
-                    is_walk: false,
-                    access_type: AccessType::Fetch,
-                },
-            )?;
+            let inst = bus
+                .memory()
+                .read(next_pc - MEMORY_BASE, 4, AccessType::Fetch, false)?;
 
             Ok(inst)
         } else {
@@ -913,7 +976,7 @@ impl Cpu {
     // [todo]: handle_{exception,intrrupt}をまとめてhandle_trapにする。
     //[todo] MMU実装時にself.csr.handle_trapに渡すvaを仮想アドレスを表すものに変更する。
     #[inline]
-    pub fn handle_trap(&mut self, e: Trap, bus: &mut Bus) {
+    pub fn handle_trap(&mut self, e: Trap) {
         let (next_pc, next_prv) = match e {
             Trap::UnimplementedCSR | Trap::UnimplementedInstruction => {
                 eprintln!("{:?}", e);
@@ -928,10 +991,7 @@ impl Cpu {
                 self.csr.handle_trap(self.prv, e, self.pc, fault_addr)
             }
             Trap::IlligalInstruction => self.csr.handle_trap(self.prv, e, self.pc, self.inst),
-            Trap::SupervisorExternalInterrupt => {
-                self.prepare_external_interrupt(bus);
-                self.csr.handle_trap(self.prv, e, self.pc, 0)
-            }
+            Trap::SupervisorExternalInterrupt => self.csr.handle_trap(self.prv, e, self.pc, 0),
             _ => self.csr.handle_trap(self.prv, e, self.pc, 0),
         };
 
@@ -944,14 +1004,8 @@ impl Cpu {
         //}
     }
 
-    #[inline]
-    pub fn prepare_external_interrupt(&mut self, bus: &mut Bus) {
-        bus.prepare_interrupt();
-    }
-
     // 割り込みが起こっているか確認する関数
     // 起こっている場合は割り込みに対応するExceptionを返す。
-    #[inline]
     pub fn check_local_intrrupt_active(&mut self) -> Option<Trap> {
         self.csr.resolve_pending(self.prv)
     }
@@ -966,27 +1020,52 @@ impl Cpu {
         }
     }
 
-    #[inline]
-    pub fn prv(&self) -> Priv {
-        self.prv
-    }
-
-    #[inline]
-    pub fn mut_csr(&mut self) -> &mut Csr {
+    pub fn csr_mut(&mut self) -> &mut Csr {
         &mut self.csr
     }
 
-    #[inline]
     fn change_prv(&mut self, prv: Priv) {
         self.prv = prv;
     }
 
-    #[inline]
     pub fn progress_pc(&mut self) {
         self.pc += 4;
     }
 
     pub fn set_pc(&mut self, pc: u32) {
         self.pc = pc;
+    }
+
+    pub fn is_interrupting(&self) -> bool {
+        self.pending_interrupts.len() != 0
+    }
+
+    pub fn raise_interrupt(&mut self, irq: Irq) {
+        self.plic.set_pending(irq);
+
+        if let Some(prv) = self.plic.raise_interrupt() {
+            match prv {
+                Priv::Machine => self.csr.set_mip_meip(1),
+                Priv::Supervisor => self.csr.set_mip_seip(1),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    pub fn lower_interrupt(&mut self) {
+        self.csr.set_mip_seip(0);
+        // self.csr.set_mip_meip(0);
+    }
+
+    pub fn pop_interrupt(&mut self) -> Option<Irq> {
+        self.pending_interrupts.pop()
+    }
+
+    pub fn pending_interrupts_mut(&mut self) -> &mut IrqQueue {
+        &mut self.pending_interrupts
+    }
+
+    pub fn can_external_interrupt(&self) -> bool {
+        self.csr.can_external_interrupt(self.prv)
     }
 }
