@@ -77,12 +77,12 @@
 			//  interrupt-parent = <0x03>;
       //};
 
-      virtio_gpu@10009000 {
-        compatible = "virtio,mmio";
-        reg = <0x10009000 0x1000>;
-        interrupts = <2>;
-			  interrupt-parent = <0x03>;
-      };
+      //virtio_gpu@10009000 {
+      //  compatible = "virtio,mmio";
+      //  reg = <0x10009000 0x1000>;
+      //  interrupts = <2>;
+			//  interrupt-parent = <0x03>;
+      //};
 
       //virtio_blk@10900000 {
       //  compatible = "virtio,mmio";

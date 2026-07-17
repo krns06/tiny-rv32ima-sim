@@ -10,10 +10,6 @@ use crate::{
 };
 
 pub mod uart;
-pub mod virtio_blk;
-pub mod virtio_gpu;
-pub mod virtio_mmio;
-pub mod virtio_net;
 
 pub const MEMORY_BASE: u32 = 0x80000000;
 pub const MEMORY_END: u32 = 0x90000000;

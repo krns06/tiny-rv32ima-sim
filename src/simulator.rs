@@ -3,8 +3,7 @@ use std::marker::PhantomData;
 use crate::{
     bus::{
         Bus, BusDevice, UART_BASE, UART_END, VIRTIO_BLK_BASE, VIRTIO_BLK_END, VIRTIO_GPU_BASE,
-        VIRTIO_GPU_END, VIRTIO_NET_BASE, VIRTIO_NET_END, uart::Uart, virtio_blk::VirtioBlk,
-        virtio_gpu::VirtioGpu, virtio_net::VirtioNet,
+        VIRTIO_GPU_END, VIRTIO_NET_BASE, VIRTIO_NET_END, uart::Uart,
     },
     cpu::Cpu,
     host_device::HostDeviceManager,
@@ -13,9 +12,6 @@ use crate::{
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::{sync::mpsc, thread};
-
-#[cfg(not(target_arch = "wasm32"))]
-use crate::host_device::{gpu::HostGpu, net::HostNet, shell::Shell};
 
 #[cfg(target_arch = "wasm32")]
 use crate::{
@@ -63,7 +59,7 @@ impl Simulator<Initial> {
     // ブロックデバイス用にファイルの中身を持つVecを引数に取る。
     #[cfg(not(target_arch = "wasm32"))]
     pub fn setup_native_devices(mut self, filepath: &str) -> Simulator<NativeSetup> {
-        use crate::host_device::blk::HostBlk;
+        use crate::host_device::shell::Shell;
 
         let (uart_tx, uart_rx) = mpsc::channel();
 
@@ -74,53 +70,11 @@ impl Simulator<Initial> {
 
         let shell = Box::new(Shell::new(uart_tx));
 
-        let (net_host_tx, net_guest_rx) = mpsc::channel();
-        let (net_guest_tx, net_host_rx) = mpsc::channel();
-
-        let virtio_net = BusDevice::new(
-            Box::new(VirtioNet::new(
-                NativeReciever::new(net_guest_rx),
-                NativeSender::new(net_guest_tx),
-            )),
-            VIRTIO_NET_BASE..VIRTIO_NET_END,
-        );
-
-        let host_net = Box::new(HostNet::new(net_host_rx, net_host_tx));
-
-        let (gpu_tx, gpu_rx) = mpsc::channel();
-
-        let virtio_gpu = BusDevice::new(
-            Box::new(VirtioGpu::new(NativeSender::new(gpu_tx))),
-            VIRTIO_GPU_BASE..VIRTIO_GPU_END,
-        );
-
-        let host_gpu = Box::new(HostGpu::new(gpu_rx));
-
-        let (blk_tx, blk_rx) = mpsc::channel();
-
-        let mut host_blk = HostBlk::new(filepath, blk_rx).unwrap();
-        let block_bytes = host_blk.read_bytes().unwrap();
-
-        let virtio_blk = BusDevice::new(
-            Box::new(VirtioBlk::new(NativeSender::new(blk_tx), block_bytes)),
-            VIRTIO_BLK_BASE..VIRTIO_BLK_END,
-        );
-
-        let host_blk = Box::new(host_blk);
-
-        self.bus
-            .add_device(uart)
-            .add_device(virtio_net)
-            .add_device(virtio_gpu)
-            .add_device(virtio_blk);
+        self.bus.add_device(uart);
 
         let mut device_manager = HostDeviceManager::default();
 
-        device_manager
-            .add_device(shell)
-            .add_device(host_net)
-            .add_device(host_gpu)
-            .add_device(host_blk);
+        device_manager.add_device(shell);
 
         Simulator {
             cpu: self.cpu,
