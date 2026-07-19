@@ -1,13 +1,12 @@
-use tiny_rv32ima_sim::cpu::Cpu;
+use tiny_rv32ima_sim::simulator::Simulator;
 
-use crate::common::{TEST_ELVES_DIR, run_elf_tests};
+use crate::common::run_flat_isa_tests;
 
 mod common;
 
 #[test]
 fn test_um_flats() {
-    let mut cpu = Cpu::new();
+    let mut simulator = Simulator::new();
 
-    let rv32um_dir = format!("{}/{}", TEST_ELVES_DIR, "rv32um");
-    run_elf_tests(&mut cpu, rv32um_dir, 0x80000000 | 0x1000, vec![]);
+    run_flat_isa_tests(&mut simulator, "rv32um", 0x80000000 | 0x1000, vec![]);
 }

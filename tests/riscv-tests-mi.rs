@@ -1,14 +1,12 @@
-use tiny_rv32ima_sim::cpu::Cpu;
+use tiny_rv32ima_sim::simulator::Simulator;
 
-use crate::common::{TEST_ELVES_DIR, run_elf_test};
+use crate::common::{TEST_DIR, run_elf_test};
 
 mod common;
 
 #[test]
-fn test_ua_flats() {
-    let mut cpu = Cpu::new();
-
-    let rv32mi_p_dir = format!("{}/{}", TEST_ELVES_DIR, "rv32mi");
+fn test_mi_flats() {
+    let mut simulator = Simulator::new();
 
     let required_tests = [
         "rv32mi-p-csr",
@@ -28,11 +26,12 @@ fn test_ua_flats() {
 
     for test in required_tests {
         println!("TRY: {}", test);
-        run_elf_test(
-            &mut cpu,
-            format!("{}/{}", rv32mi_p_dir, test),
+        if run_elf_test(
+            &mut simulator,
+            format!("{}/{}", TEST_DIR, test),
             0x80000000 | 0x1000,
-        );
-        println!("PASS: {}", test);
+        ) {
+            println!("PASS: {}", test);
+        }
     }
 }

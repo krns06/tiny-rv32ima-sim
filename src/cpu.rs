@@ -56,6 +56,11 @@ pub struct Cpu {
 
     reserved_addr: Option<u32>, // For LR.W or SC.W
     fault_addr: Option<u32>,
+
+    is_debug: bool,
+    debug_exit_address: Option<u32>,
+    is_debug_finished: bool,
+    is_debug_success: bool,
 }
 
 impl Default for Registers {
@@ -148,13 +153,49 @@ impl Default for Cpu {
             tlb,
             reserved_addr: None,
             fault_addr: None,
+            is_debug: false,
+            debug_exit_address: None,
+            is_debug_finished: false,
+            is_debug_success: false,
         }
     }
 }
 
 impl Cpu {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn init(&mut self) {
         *self = Self::default();
+    }
+
+    pub fn start_debug(&mut self, exit_address: u32) {
+        self.is_debug = true;
+        self.debug_exit_address = Some(exit_address);
+        self.is_debug_finished = false;
+        self.is_debug_success = false;
+    }
+
+    pub fn stop_debug(&mut self) {
+        self.is_debug = false;
+        self.debug_exit_address = None;
+    }
+
+    pub fn is_debug_finished(&self) -> bool {
+        self.is_debug_finished
+    }
+
+    pub fn is_debug_success(&self) -> bool {
+        self.is_debug_success
+    }
+
+    #[inline]
+    fn handle_debug_write(&mut self, pa: u32, value: u32) {
+        if self.is_debug && self.debug_exit_address == Some(pa) {
+            self.is_debug_finished = true;
+            self.is_debug_success = value == 1;
+        }
     }
 
     #[inline]
@@ -228,9 +269,12 @@ impl Cpu {
             if r != 0 || x != 0 {
                 // PTEを発見
 
+                let mxr_read = access_type.is_read() && x != 0 && self.csr.is_enabled_mstatus_mxr();
+
                 if (r == access_type as u32)
                     || (w == access_type as u32)
                     || (x == access_type as u32)
+                    || mxr_read
                 {
                     // 権限の確認
 
@@ -287,7 +331,12 @@ impl Cpu {
 
             let entry = TlbEntry::new(va, ppn);
 
-            self.tlb.register_entry(entry, access_type);
+            // MXR can change without an SFENCE.VMA. Do not cache a read that was
+            // permitted only because MXR was set, otherwise clearing MXR would
+            // leave an execute-only page readable through a stale TLB entry.
+            if !(access_type.is_read() && pte & PTE_R == 0) {
+                self.tlb.register_entry(entry, access_type);
+            }
 
             Ok(pa)
         } else {
@@ -341,6 +390,8 @@ impl Cpu {
         let access_type = AccessType::Write;
 
         let pa = self.translate_va(addr, access_type, bus)?;
+        self.handle_debug_write(pa, value);
+
         match pa {
             CLINT_BASE..CLINT_END => self.write_clint(pa - CLINT_BASE, size, value),
             PLIC_BASE..PLIC_END => self.plic.write(pa - PLIC_BASE, value, size, &mut self.csr),

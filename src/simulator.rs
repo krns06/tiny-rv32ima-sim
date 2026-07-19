@@ -35,13 +35,73 @@ pub struct WasmSetup;
 pub struct NativeLoaded;
 pub struct WasmLoaded;
 
+const DEBUG_RUN_MAX_STEPS: u64 = 20_000_000;
+
 impl<T> Simulator<T> {
     pub fn load_flat(&mut self, array: &[u8], addr: u32) {
         self.bus.memory().load_flat_binary(array, addr);
+        self.cpu.set_pc(addr);
+    }
+
+    pub fn load_elf(&mut self, array: &[u8]) -> u32 {
+        let entry_point = self.bus.memory().load_elf_binary(array);
+        self.cpu.set_pc(entry_point);
+        entry_point
     }
 
     pub fn cpu(&self) -> &Cpu {
         &self.cpu
+    }
+
+    pub fn debug_run(&mut self, exit_address: u32) -> bool {
+        self.cpu.start_debug(exit_address);
+
+        for _ in 0..DEBUG_RUN_MAX_STEPS {
+            self.step_once();
+
+            if self.cpu.is_debug_finished() {
+                let is_success = self.cpu.is_debug_success();
+                self.cpu.stop_debug();
+                return is_success;
+            }
+        }
+
+        self.cpu.stop_debug();
+        false
+    }
+
+    fn step_once(&mut self) {
+        if self.cpu.can_external_interrupt() {
+            if self.cpu.is_interrupting() {
+                let irq = self.cpu.pop_interrupt().unwrap();
+                self.bus.prepare_interrupt(irq);
+                self.cpu.raise_interrupt(irq);
+            } else {
+                self.bus.tick(self.cpu.pending_interrupts_mut());
+            }
+        } else {
+            self.cpu.lower_interrupt();
+        }
+
+        if let Some(e) = self.cpu.check_local_intrrupt_active() {
+            self.cpu.handle_trap(e);
+        }
+
+        match self.cpu.step(&mut self.bus) {
+            Err(e) => {
+                self.cpu.handle_trap(e);
+            }
+            Ok(is_jump) => {
+                self.cpu.csr_mut().progress_instret();
+
+                if !is_jump {
+                    self.cpu.progress_pc();
+                }
+            }
+        }
+
+        self.cpu.csr_mut().progress_cycle();
+        self.cpu.csr_mut().progress_time();
     }
 }
 
@@ -161,37 +221,7 @@ impl Simulator<NativeLoaded> {
         }
 
         loop {
-            if self.cpu.can_external_interrupt() {
-                if self.cpu.is_interrupting() {
-                    let irq = self.cpu.pop_interrupt().unwrap();
-                    self.bus.prepare_interrupt(irq);
-                    self.cpu.raise_interrupt(irq);
-                } else {
-                    self.bus.tick(self.cpu.pending_interrupts_mut());
-                }
-            } else {
-                self.cpu.lower_interrupt();
-            }
-
-            if let Some(e) = self.cpu.check_local_intrrupt_active() {
-                self.cpu.handle_trap(e);
-            }
-
-            match self.cpu.step(&mut self.bus) {
-                Err(e) => {
-                    self.cpu.handle_trap(e);
-                }
-                Ok(is_jump) => {
-                    self.cpu.csr_mut().progress_instret();
-
-                    if !is_jump {
-                        self.cpu.progress_pc();
-                    }
-                }
-            }
-
-            self.cpu.csr_mut().progress_cycle();
-            self.cpu.csr_mut().progress_time();
+            self.step_once();
         }
     }
 }
@@ -199,37 +229,7 @@ impl Simulator<NativeLoaded> {
 #[cfg(target_arch = "wasm32")]
 impl Simulator<WasmLoaded> {
     pub fn step(&mut self) {
-        if self.cpu.can_external_interrupt() {
-            if self.cpu.is_interrupting() {
-                let irq = self.cpu.pop_interrupt().unwrap();
-                self.bus.prepare_interrupt(irq);
-                self.cpu.raise_interrupt(irq);
-            } else {
-                self.bus.tick(self.cpu.pending_interrupts_mut());
-            }
-        } else {
-            self.cpu.lower_interrupt();
-        }
-
-        if let Some(e) = self.cpu.check_local_intrrupt_active() {
-            self.cpu.handle_trap(e);
-        }
-
-        match self.cpu.step(&mut self.bus) {
-            Err(e) => {
-                self.cpu.handle_trap(e);
-            }
-            Ok(is_jump) => {
-                self.cpu.csr_mut().progress_instret();
-
-                if !is_jump {
-                    self.cpu.progress_pc();
-                }
-            }
-        }
-
-        self.cpu.csr_mut().progress_cycle();
-        self.cpu.csr_mut().progress_time();
+        self.step_once();
     }
 
     pub fn send_key(&mut self, key: char) {

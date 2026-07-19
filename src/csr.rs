@@ -99,7 +99,7 @@ const STATUS_SPP: u32 = 1 << STATUS_SPP_POS;
 const STATUS_MPP: u32 = 0x3 << STATUS_MPP_POS;
 const STATUS_MPRV: u32 = 1 << 17;
 const STATUS_SUM: u32 = 1 << 18;
-const STATUS_MXR: u32 = 1 << 19; //[todo] implement when virtual address implemented
+const STATUS_MXR: u32 = 1 << 19;
 const STATUS_TVM: u32 = 1 << 20; //[todo] implement when supervisor mode implemented
 const STATUS_TW: u32 = 1 << 21; //[todo] implement when wfi instruction implemented
 const STATUS_TSR: u32 = 1 << 22; //[todo] implement when sret instruction implemented
@@ -113,7 +113,8 @@ const MSTATUS_SUPPORTED: u32 = STATUS_SIE
     | STATUS_TVM
     | STATUS_TSR
     | STATUS_MPRV
-    | STATUS_SUM;
+    | STATUS_SUM
+    | STATUS_MXR;
 
 const COUNTEREN_CY: u32 = 1;
 const COUNTEREN_TM: u32 = 1 << 1;
@@ -352,10 +353,6 @@ impl Csr {
             SSTATUS => {
                 if value & !SSTATUS_SUPPORTED != 0 {
                     unimplemented!();
-                }
-
-                if value & STATUS_MXR != 0 {
-                    panic!("[WARNING]: sstatus.MXR is not supported.");
                 }
 
                 self.mstatus = (self.mstatus & !SSTATUS_SUPPORTED) | (value & SSTATUS_SUPPORTED);
@@ -601,6 +598,11 @@ impl Csr {
     #[inline]
     pub fn is_enabled_mstatus_sum(&self) -> bool {
         self.mstatus & STATUS_SUM != 0
+    }
+
+    #[inline]
+    pub fn is_enabled_mstatus_mxr(&self) -> bool {
+        self.mstatus & STATUS_MXR != 0
     }
 
     #[inline]

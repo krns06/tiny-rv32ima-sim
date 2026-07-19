@@ -1,17 +1,16 @@
-use tiny_rv32ima_sim::cpu::Cpu;
+use tiny_rv32ima_sim::simulator::Simulator;
 
-use crate::common::{RiscvTest, TEST_ELVES_DIR, run_elf_tests};
+use crate::common::{RiscvTest, run_flat_isa_tests};
 
 mod common;
 
 #[test]
-fn test_ui_elves() {
-    let mut cpu = Cpu::new();
+fn test_ui_flats() {
+    let mut simulator = Simulator::new();
 
-    let rv32ui_dir = format!("{}/{}", TEST_ELVES_DIR, "rv32ui");
-    run_elf_tests(
-        &mut cpu,
-        rv32ui_dir,
+    run_flat_isa_tests(
+        &mut simulator,
+        "rv32ui",
         0x80000000 | 0x1000,
         vec![RiscvTest {
             filename: "rv32ui-p-ld_st",
