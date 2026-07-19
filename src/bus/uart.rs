@@ -18,6 +18,9 @@ const LSR_THRE: u8 = 1 << 5;
 const LSR_TEMT: u8 = 1 << 6;
 const LSR_DR: u8 = 1;
 
+#[cfg(not(target_arch = "wasm32"))]
+const OUTPUT_BUFFER_CAPACITY: usize = 256;
+
 #[derive(Debug)]
 pub struct Uart<R>
 where
@@ -35,6 +38,9 @@ where
     is_taken_interrupt: bool,
 
     input_buf: Vec<char>,
+
+    #[cfg(not(target_arch = "wasm32"))]
+    output_buf: Vec<u8>,
 
     reciever: R,
 }
@@ -120,8 +126,10 @@ impl<R: DeviceRecieverTrait> DeviceTrait for Uart<R> {
                     let c = value as u8;
                     #[cfg(not(target_arch = "wasm32"))]
                     {
-                        print!("{}", c as char);
-                        std::io::stdout().flush().unwrap();
+                        self.output_buf.push(c);
+                        if c == b'\n' || self.output_buf.len() >= OUTPUT_BUFFER_CAPACITY {
+                            self.flush_output();
+                        }
                     }
 
                     #[cfg(target_arch = "wasm32")]
@@ -185,6 +193,9 @@ impl<R: DeviceRecieverTrait> DeviceTrait for Uart<R> {
 
     #[inline]
     fn tick(&mut self, _: &mut Memory) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.flush_output();
+
         if let Ok(DeviceMessage::Uart(c)) = self.reciever.try_recv_from_host() {
             self.input_buf.push(c);
         }
@@ -220,8 +231,23 @@ impl<R: DeviceRecieverTrait> Uart<R> {
             is_taken_interrupt: false,
             input_buf,
 
+            #[cfg(not(target_arch = "wasm32"))]
+            output_buf: Vec::with_capacity(OUTPUT_BUFFER_CAPACITY),
+
             reciever,
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn flush_output(&mut self) {
+        if self.output_buf.is_empty() {
+            return;
+        }
+
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(&self.output_buf).unwrap();
+        stdout.flush().unwrap();
+        self.output_buf.clear();
     }
 
     fn is_dlab_enabled(&self) -> bool {

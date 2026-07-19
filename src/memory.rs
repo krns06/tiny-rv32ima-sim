@@ -38,12 +38,15 @@ impl Memory {
             return Err(access_type.into_trap(is_walk));
         }
 
-        let bytes = self.raw_read(offset, size);
-
         let value = match size {
-            1 => u8::from_le_bytes(bytes.try_into().unwrap()) as u32,
-            2 => u16::from_le_bytes(bytes.try_into().unwrap()) as u32,
-            4 => u32::from_le_bytes(bytes.try_into().unwrap()),
+            1 => self.array[offset] as u32,
+            2 => u16::from_le_bytes([self.array[offset], self.array[offset + 1]]) as u32,
+            4 => u32::from_le_bytes([
+                self.array[offset],
+                self.array[offset + 1],
+                self.array[offset + 2],
+                self.array[offset + 3],
+            ]),
             _ => unreachable!(),
         };
 
@@ -71,6 +74,21 @@ impl Memory {
             4 => Ok(self.raw_write(offset, &value.to_le_bytes())),
             _ => unreachable!(),
         }
+    }
+
+    #[inline]
+    pub fn read_instruction_u32(&self, offset: u32) -> Result<u32> {
+        let offset = offset as usize;
+        if self.is_invalid_range(offset, 4) {
+            return Err(AccessType::Fetch.into_trap(false));
+        }
+
+        Ok(u32::from_le_bytes([
+            self.array[offset],
+            self.array[offset + 1],
+            self.array[offset + 2],
+            self.array[offset + 3],
+        ]))
     }
 }
 

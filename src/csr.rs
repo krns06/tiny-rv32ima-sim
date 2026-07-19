@@ -487,37 +487,33 @@ impl Csr {
     }
 
     #[inline]
-    pub fn progress_cycle(&mut self) {
+    pub fn progress_counters(&mut self, instruction_retired: bool) {
         if self.mcountinhibit & COUNTEREN_CY == 0 {
             self.cycle = self.cycle.wrapping_add(1);
         }
-    }
 
-    #[inline]
-    pub fn progress_time(&mut self) {
         self.time = self.time.wrapping_add(1);
 
         if self.time >= self.mtimecmp {
-            self.mip = self.mip | IP_MTIP;
+            self.mip |= IP_MTIP;
         } else {
-            self.mip = self.mip & !IP_MTIP;
+            self.mip &= !IP_MTIP;
         }
 
         if self.time >= self.stimecmp {
-            self.mip = self.mip | IP_STIP;
+            self.mip |= IP_STIP;
         } else {
-            self.mip = self.mip & !IP_STIP;
+            self.mip &= !IP_STIP;
         }
-    }
 
-    #[inline]
-    pub fn progress_instret(&mut self) {
-        if !self.suppress_minsret {
-            if self.mcountinhibit & COUNTEREN_IR == 0 {
-                self.instret = self.instret.wrapping_add(1);
+        if instruction_retired {
+            if !self.suppress_minsret {
+                if self.mcountinhibit & COUNTEREN_IR == 0 {
+                    self.instret = self.instret.wrapping_add(1);
+                }
+            } else {
+                self.suppress_minsret = false;
             }
-        } else {
-            self.suppress_minsret = false;
         }
     }
 

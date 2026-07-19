@@ -25,6 +25,7 @@ pub struct Simulator<T> {
     cpu: Cpu,
     bus: Bus,
     host_device_manager: Option<HostDeviceManager>,
+    device_tick_countdown: u32,
     _marker: PhantomData<T>,
 }
 
@@ -36,6 +37,7 @@ pub struct NativeLoaded;
 pub struct WasmLoaded;
 
 const DEBUG_RUN_MAX_STEPS: u64 = 20_000_000;
+const DEVICE_TICK_INTERVAL: u32 = 256;
 
 impl<T> Simulator<T> {
     pub fn load_flat(&mut self, array: &[u8], addr: u32) {
@@ -70,14 +72,25 @@ impl<T> Simulator<T> {
         false
     }
 
+    /// Executes exactly `steps` guest instructions. Intended for deterministic
+    /// benchmarks and embedding scenarios that provide their own run loop.
+    pub fn run_steps(&mut self, steps: u64) {
+        for _ in 0..steps {
+            self.step_once();
+        }
+    }
+
     fn step_once(&mut self) {
         if self.cpu.can_external_interrupt() {
             if self.cpu.is_interrupting() {
                 let irq = self.cpu.pop_interrupt().unwrap();
                 self.bus.prepare_interrupt(irq);
                 self.cpu.raise_interrupt(irq);
-            } else {
+            } else if self.device_tick_countdown == 0 {
                 self.bus.tick(self.cpu.pending_interrupts_mut());
+                self.device_tick_countdown = DEVICE_TICK_INTERVAL - 1;
+            } else {
+                self.device_tick_countdown -= 1;
             }
         } else {
             self.cpu.lower_interrupt();
@@ -87,21 +100,21 @@ impl<T> Simulator<T> {
             self.cpu.handle_trap(e);
         }
 
-        match self.cpu.step(&mut self.bus) {
+        let instruction_retired = match self.cpu.step(&mut self.bus) {
             Err(e) => {
                 self.cpu.handle_trap(e);
+                false
             }
             Ok(is_jump) => {
-                self.cpu.csr_mut().progress_instret();
-
                 if !is_jump {
                     self.cpu.progress_pc();
                 }
-            }
-        }
 
-        self.cpu.csr_mut().progress_cycle();
-        self.cpu.csr_mut().progress_time();
+                true
+            }
+        };
+
+        self.cpu.csr_mut().progress_counters(instruction_retired);
     }
 }
 
@@ -111,6 +124,7 @@ impl Simulator<Initial> {
             cpu: Cpu::default(),
             bus: Bus::default(),
             host_device_manager: None,
+            device_tick_countdown: 0,
             _marker: PhantomData,
         }
     }
@@ -140,6 +154,7 @@ impl Simulator<Initial> {
             cpu: self.cpu,
             bus: self.bus,
             host_device_manager: Some(device_manager),
+            device_tick_countdown: self.device_tick_countdown,
             _marker: PhantomData,
         }
     }
@@ -178,6 +193,7 @@ impl Simulator<Initial> {
             cpu: self.cpu,
             bus: self.bus,
             host_device_manager: self.host_device_manager,
+            device_tick_countdown: self.device_tick_countdown,
             _marker: PhantomData,
         }
     }
@@ -192,6 +208,7 @@ impl Simulator<NativeSetup> {
             cpu: self.cpu,
             bus: self.bus,
             host_device_manager: self.host_device_manager,
+            device_tick_countdown: self.device_tick_countdown,
             _marker: PhantomData,
         }
     }
@@ -206,6 +223,7 @@ impl Simulator<WasmSetup> {
             cpu: self.cpu,
             bus: self.bus,
             host_device_manager: self.host_device_manager,
+            device_tick_countdown: self.device_tick_countdown,
             _marker: PhantomData,
         }
     }

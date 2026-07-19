@@ -345,17 +345,17 @@ impl Cpu {
     }
 
     #[inline]
-    pub fn read_memory(&mut self, addr: u32, size: u32, bus: &mut Bus) -> Result<u32> {
+    fn read_memory<const SIZE: u32>(&mut self, addr: u32, bus: &mut Bus) -> Result<u32> {
         let access_type = AccessType::Read;
         let pa = self.translate_va(addr, access_type, bus)?;
 
         match pa {
-            CLINT_BASE..CLINT_END => self.read_clint(pa - CLINT_BASE, size),
-            PLIC_BASE..PLIC_END => self.plic.read(pa - PLIC_BASE, size),
+            CLINT_BASE..CLINT_END => self.read_clint(pa - CLINT_BASE, SIZE),
+            PLIC_BASE..PLIC_END => self.plic.read(pa - PLIC_BASE, SIZE),
             MEMORY_BASE..MEMORY_END => {
                 // 少しコードは汚くなるが劇的に早くなった。
                 bus.memory()
-                    .read(pa - MEMORY_BASE, size, access_type, false)
+                    .read(pa - MEMORY_BASE, SIZE, access_type, false)
             }
             _ => {
                 let ctx = CpuContext {
@@ -365,39 +365,44 @@ impl Cpu {
                     access_type,
                 };
 
-                bus.read(pa, size, ctx)
+                bus.read(pa, SIZE, ctx)
             }
         }
     }
 
     #[inline]
     pub fn read_memory_u8(&mut self, addr: u32, bus: &mut Bus) -> Result<u32> {
-        self.read_memory(addr, 1, bus)
+        self.read_memory::<1>(addr, bus)
     }
 
     #[inline]
     pub fn read_memory_u16(&mut self, addr: u32, bus: &mut Bus) -> Result<u32> {
-        self.read_memory(addr, 2, bus)
+        self.read_memory::<2>(addr, bus)
     }
 
     #[inline]
     pub fn read_memory_u32(&mut self, addr: u32, bus: &mut Bus) -> Result<u32> {
-        self.read_memory(addr, 4, bus)
+        self.read_memory::<4>(addr, bus)
     }
 
     #[inline]
-    pub fn write_memory(&mut self, addr: u32, size: u32, value: u32, bus: &mut Bus) -> Result<()> {
+    fn write_memory<const SIZE: u32>(
+        &mut self,
+        addr: u32,
+        value: u32,
+        bus: &mut Bus,
+    ) -> Result<()> {
         let access_type = AccessType::Write;
 
         let pa = self.translate_va(addr, access_type, bus)?;
         self.handle_debug_write(pa, value);
 
         match pa {
-            CLINT_BASE..CLINT_END => self.write_clint(pa - CLINT_BASE, size, value),
-            PLIC_BASE..PLIC_END => self.plic.write(pa - PLIC_BASE, value, size, &mut self.csr),
+            CLINT_BASE..CLINT_END => self.write_clint(pa - CLINT_BASE, SIZE, value),
+            PLIC_BASE..PLIC_END => self.plic.write(pa - PLIC_BASE, value, SIZE, &mut self.csr),
             MEMORY_BASE..MEMORY_END => {
                 bus.memory()
-                    .write(pa - MEMORY_BASE, size, value, access_type, false)
+                    .write(pa - MEMORY_BASE, SIZE, value, access_type, false)
             }
             _ => {
                 let ctx = CpuContext {
@@ -407,24 +412,24 @@ impl Cpu {
                     access_type,
                 };
 
-                bus.write(pa, size, value, ctx)
+                bus.write(pa, SIZE, value, ctx)
             }
         }
     }
 
     #[inline]
     pub fn write_memory_u8(&mut self, addr: u32, value: u32, bus: &mut Bus) -> Result<()> {
-        self.write_memory(addr, 1, value, bus)
+        self.write_memory::<1>(addr, value, bus)
     }
 
     #[inline]
     pub fn write_memory_u16(&mut self, addr: u32, value: u32, bus: &mut Bus) -> Result<()> {
-        self.write_memory(addr, 2, value, bus)
+        self.write_memory::<2>(addr, value, bus)
     }
 
     #[inline]
     pub fn write_memory_u32(&mut self, addr: u32, value: u32, bus: &mut Bus) -> Result<()> {
-        self.write_memory(addr, 4, value, bus)
+        self.write_memory::<4>(addr, value, bus)
     }
 
     #[inline]
@@ -1011,17 +1016,18 @@ impl Cpu {
 
     #[inline]
     fn fetch(&mut self, bus: &mut Bus) -> Result<u32> {
-        let next_pc = self.translate_va(self.pc, AccessType::Fetch, bus)?;
-
-        if next_pc % 4 == 0 {
-            let inst = bus
-                .memory()
-                .read(next_pc - MEMORY_BASE, 4, AccessType::Fetch, false)?;
-
-            Ok(inst)
+        let next_pc = if self.csr.is_paging_enabled() {
+            self.translate_va(self.pc, AccessType::Fetch, bus)?
         } else {
-            Err(Trap::InstructionAddressMisaligned)
+            self.pc
+        };
+
+        if next_pc & 0x3 != 0 {
+            return Err(Trap::InstructionAddressMisaligned);
         }
+
+        bus.memory()
+            .read_instruction_u32(next_pc.wrapping_sub(MEMORY_BASE))
     }
 
     // [todo]: handle_{exception,intrrupt}をまとめてhandle_trapにする。
